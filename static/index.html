@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Keyword News Scraper</title>
+  <!-- Google Fonts: Inter & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-logo">
+          <i class="fa-solid fa-newspaper brand-icon"></i>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">KEYWORD NEWS</span>
+          <span class="brand-sub">SCRAPER</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-menu">
+        <button class="menu-item active" data-tab="dashboard-view" id="nav-dashboard">
+          <i class="fa-solid fa-chart-pie"></i>
+          <span>Dashboard</span>
+        </button>
+        <button class="menu-item" data-tab="new-crawl-view" id="nav-new-crawl">
+          <i class="fa-solid fa-magnifying-glass-plus"></i>
+          <span>New Crawl Run</span>
+        </button>
+        <button class="menu-item" data-tab="history-view" id="nav-history">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+          <span>Crawl History</span>
+        </button>
+        <button class="menu-item" data-tab="schedules-view" id="nav-schedules">
+          <i class="fa-solid fa-calendar-days"></i>
+          <span>Scheduled Jobs</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="api-status">
+          <span class="status-indicator online" id="connection-indicator"></span>
+          <span class="status-text" id="connection-status">API Connected</span>
+        </div>
+        <div class="system-time">
+          <i class="fa-regular fa-clock"></i>
+          <span id="live-clock">00:00:00</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top header bar -->
+      <header class="top-header">
+        <div class="page-title-area">
+          <h1 id="page-title-text">Dashboard Overview</h1>
+          <p id="page-subtitle-text" class="text-muted">Real-time keyword discovery and content analysis</p>
+        </div>
+      </header>
+
+      <!-- VIEW 1: Dashboard Overview -->
+      <section id="dashboard-view" class="view-section active">
+        <!-- Stats Counter Panel -->
+        <div class="metrics-grid">
+          <div class="metric-card">
+            <div class="metric-icon bg-cyan">
+              <i class="fa-solid fa-circle-nodes"></i>
+            </div>
+            <div class="metric-info">
+              <span class="metric-label">Total Crawled URLs</span>
+              <h3 class="metric-val" id="stat-total-crawled">0</h3>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon bg-violet">
+              <i class="fa-solid fa-bullseye"></i>
+            </div>
+            <div class="metric-info">
+              <span class="metric-label">Total Keyword Matches</span>
+              <h3 class="metric-val" id="stat-total-matched">0</h3>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon bg-pink">
+              <i class="fa-solid fa-calendar-check"></i>
+            </div>
+            <div class="metric-info">
+              <span class="metric-label">Active Schedules</span>
+              <h3 class="metric-val" id="stat-active-schedules">0</h3>
+            </div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-icon bg-amber">
+              <i class="fa-solid fa-database"></i>
+            </div>
+            <div class="metric-info">
+              <span class="metric-label">Completed Crawl Runs</span>
+              <h3 class="metric-val" id="stat-completed-runs">0</h3>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dashboard Layout Split -->
+        <div class="dashboard-split">
+          <!-- Recent Crawl Runs Table -->
+          <div class="content-card flex-2">
+            <div class="card-header">
+              <h2>Recent Crawl Runs</h2>
+              <button class="btn btn-sm btn-outline" id="btn-refresh-history"><i class="fa-solid fa-arrows-rotate"></i> Refresh</button>
+            </div>
+            <div class="card-body scroll-table-container">
+              <table class="data-table" id="dashboard-history-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Keyword / Input</th>
+                    <th>Engine</th>
+                    <th>Type</th>
+                    <th>URLs Crawled</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="dashboard-history-tbody">
+                  <!-- Dynamic rows go here -->
+                  <tr>
+                    <td colspan="7" class="text-center py-4 text-muted">No runs executed yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Quick Launch Guide Card -->
+          <div class="content-card flex-1">
+            <div class="card-header">
+              <h2>Quick Actions</h2>
+            </div>
+            <div class="card-body flex-col gap-3">
+              <button class="quick-action-btn qa-cyan" id="quick-btn-search">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <div class="qa-details">
+                  <h4>Start New Keyword Scrape</h4>
+                  <p>Submit keyword to crawl search results</p>
+                </div>
+              </button>
+              <button class="quick-action-btn qa-violet" id="quick-btn-direct">
+                <i class="fa-solid fa-list-check"></i>
+                <div class="qa-details">
+                  <h4>Scan Specific URLs</h4>
+                  <p>Input sitemaps or URL list directly</p>
+                </div>
+              </button>
+              <button class="quick-action-btn qa-pink" id="quick-btn-schedule">
+                <i class="fa-solid fa-calendar-plus"></i>
+                <div class="qa-details">
+                  <h4>Schedule Keyword Scan</h4>
+                  <p>Configure recurring daily/weekly scans</p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: New Crawl Run Form -->
+      <section id="new-crawl-view" class="view-section">
+        <div class="content-card max-width-card">
+          <div class="card-header border-bottom">
+            <div class="tab-header">
+              <button class="form-tab active" id="tab-mode-search"><i class="fa-solid fa-earth-americas"></i> Web Search Scrape</button>
+              <button class="form-tab" id="tab-mode-direct"><i class="fa-solid fa-file-invoice"></i> Direct URLs / Sitemaps</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <form id="crawl-setup-form" class="crawl-form">
+              <!-- Search keyword or direct urls panel -->
+              <div class="form-group" id="form-group-keyword">
+                <label for="keyword-input" class="form-label">Search Keyword / Phrase</label>
+                <div class="input-with-icon">
+                  <i class="fa-solid fa-magnifying-glass"></i>
+                  <input type="text" id="keyword-input" placeholder="e.g. Python programming OR FastAPI AND Celery" class="form-control" required>
+                </div>
+                <small class="form-hint">Supports Boolean search operators: AND, OR, NOT and parentheses (e.g. <code>machine learning AND (python OR pytorch)</code>).</small>
+              </div>
+
+              <div class="form-group d-none" id="form-group-direct-urls">
+                <label for="direct-urls-input" class="form-label">Target URLs or Sitemap URLs</label>
+                <textarea id="direct-urls-input" rows="8" placeholder="https://example.com/article1&#10;https://myblog.com/sitemap.xml&#10;https://anotherdomain.org/about" class="form-control text-monospace"></textarea>
+                <small class="form-hint">Paste target URLs or sitemap links (one per line). XML sitemaps will be auto-parsed to extract all child URLs.</small>
+              </div>
+
+              <div class="form-group d-none" id="form-group-direct-keywords">
+                <label for="direct-keywords-input" class="form-label">Keywords to Search</label>
+                <div class="input-with-icon">
+                  <i class="fa-solid fa-tags"></i>
+                  <input type="text" id="direct-keywords-input" placeholder="e.g. Python, FastAPI, Celery (comma-separated)" class="form-control">
+                </div>
+                <small class="form-hint">Enter the list of keywords to search for, separated by commas or newlines.</small>
+              </div>
+
+              <!-- Accordion Advanced Settings -->
+              <div class="accordion-container">
+                <div class="accordion-trigger" id="adv-settings-trigger">
+                  <span><i class="fa-solid fa-sliders"></i> Advanced Search Toggles & Filters</span>
+                  <i class="fa-solid fa-chevron-down accordion-arrow"></i>
+                </div>
+                <div class="accordion-content" id="adv-settings-content">
+                  <div class="form-grid">
+                    <!-- Column 1: Mode and Toggles -->
+                    <div class="flex-col gap-3">
+                      <div class="form-group">
+                        <label class="form-label">Match Settings</label>
+                        <div class="toggle-group">
+                          <label class="toggle-control">
+                            <input type="checkbox" id="chk-case-sensitive">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Case Sensitive</span>
+                          </label>
+                          <label class="toggle-control">
+                            <input type="checkbox" id="chk-exact-match">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Exact Word Boundaries</span>
+                          </label>
+                          <label class="toggle-control">
+                            <input type="checkbox" id="chk-ignore-robots">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Ignore robots.txt</span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div class="form-group">
+                        <label class="form-label">Match Evaluator Type</label>
+                        <div class="radio-group">
+                          <label class="radio-control">
+                            <input type="radio" name="match-type" value="phrase" checked>
+                            <span class="radio-dot"></span>
+                            <span>Phrase Match</span>
+                          </label>
+                          <label class="radio-control">
+                            <input type="radio" name="match-type" value="boolean">
+                            <span class="radio-dot"></span>
+                            <span>Boolean Expression</span>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Column 2: Crawl Engine and Limits -->
+                    <div class="flex-col gap-3">
+                      <div class="form-group">
+                        <label for="select-crawl-engine" class="form-label">Crawl Engine</label>
+                        <select id="select-crawl-engine" class="form-control">
+                          <option value="fast">Fast HTTP (Requests + BeautifulSoup)</option>
+                          <option value="dynamic">Dynamic JS (Selenium Headless Chrome)</option>
+                        </select>
+                        <small class="form-hint">Fast mode downloads HTML raw text. Dynamic mode boots headless Chrome (required for JS apps).</small>
+                      </div>
+
+                      <div class="form-group">
+                        <label for="languages-filter-input" class="form-label">Language Filtering (ISO codes)</label>
+                        <input type="text" id="languages-filter-input" placeholder="e.g. en, es, fr" class="form-control">
+                        <small class="form-hint">Filter results by comma-separated ISO languages (e.g. 'en' for English).</small>
+                      </div>
+                    </div>
+                  </div>
+
+                  <hr class="form-divider">
+
+                  <div class="form-grid">
+                    <!-- Row 2 Column 1: Domain filter -->
+                    <div class="form-group">
+                      <label for="domains-include" class="form-label">Include Specific Domains</label>
+                      <input type="text" id="domains-include" placeholder="e.g. wikipedia.org, github.com" class="form-control">
+                      <small class="form-hint">Comma-separated domains to search exclusively. Leave empty to allow any.</small>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="domains-exclude" class="form-label">Exclude Specific Domains</label>
+                      <input type="text" id="domains-exclude" placeholder="e.g. spammyblog.com, badsite.org" class="form-control">
+                      <small class="form-hint">Comma-separated domains to exclude from search results.</small>
+                    </div>
+                  </div>
+
+                  <hr class="form-divider">
+
+                  <div class="form-grid">
+                    <!-- Row 3 Column 1: Date Filter -->
+                    <div class="form-group">
+                      <label for="date-start" class="form-label">Published / Indexed Date (Start)</label>
+                      <input type="date" id="date-start" class="form-control">
+                    </div>
+                    <div class="form-group">
+                      <label for="date-end" class="form-label">Published / Indexed Date (End)</label>
+                      <input type="date" id="date-end" class="form-control">
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Submit Buttons -->
+              <div class="form-actions border-top">
+                <button type="submit" class="btn btn-primary" id="btn-submit-crawl">
+                  <i class="fa-solid fa-rocket"></i> Launch Crawl Process
+                </button>
+                <button type="button" class="btn btn-secondary" id="btn-schedule-setup">
+                  <i class="fa-solid fa-clock"></i> Schedule Recurring
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 3: Results Detail and Live Monitor -->
+      <section id="results-detail-view" class="view-section">
+        <!-- Live Progress Monitor Banner -->
+        <div class="content-card progress-banner" id="progress-monitor-card">
+          <div class="progress-header">
+            <div class="progress-title-details">
+              <span class="pulse-indicator" id="progress-pulse"></span>
+              <h3 id="progress-keyword-text">Analyzing: keyword</h3>
+              <span class="badge" id="progress-status-badge">Processing</span>
+            </div>
+            <span class="progress-percentage-text" id="progress-percent-label">0% Complete</span>
+          </div>
+          
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%"></div>
+          </div>
+
+          <div class="progress-stats-summary">
+            <div class="p-stat">
+              <span class="p-stat-lbl">Discovered URLs</span>
+              <span class="p-stat-val" id="progress-stat-found">0</span>
+            </div>
+            <div class="p-stat-divider"></div>
+            <div class="p-stat">
+              <span class="p-stat-lbl">Crawled Pages</span>
+              <span class="p-stat-val" id="progress-stat-crawled">0</span>
+            </div>
+            <div class="p-stat-divider"></div>
+            <div class="p-stat">
+              <span class="p-stat-lbl">Matches Found</span>
+              <span class="p-stat-val" id="progress-stat-matched">0</span>
+            </div>
+            <div class="p-stat-divider"></div>
+            <div class="p-stat">
+              <span class="p-stat-lbl">Crawl Engine</span>
+              <span class="p-stat-val" id="progress-stat-engine">Fast</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Filter bar and export grid -->
+        <div class="results-toolbar">
+          <div class="toolbar-filters">
+            <div class="search-box">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <input type="text" id="results-search-input" placeholder="Filter by Domain/Title...">
+            </div>
+            <select id="results-status-filter" class="form-control select-sm">
+              <option value="">All Statuses</option>
+              <option value="matched">Matched Results</option>
+              <option value="skipped">Skipped (No Match)</option>
+              <option value="failed">Failed / Errors</option>
+            </select>
+            <label class="toggle-control text-xs">
+              <input type="checkbox" id="chk-exclude-duplicates" checked>
+              <span class="toggle-slider"></span>
+              <span>Hide Duplicates</span>
+            </label>
+          </div>
+          
+          <div class="toolbar-actions">
+            <div class="dropdown">
+              <button class="btn btn-outline" id="btn-export-dropdown">
+                <i class="fa-solid fa-file-export"></i> Export Results <i class="fa-solid fa-chevron-down"></i>
+              </button>
+              <div class="dropdown-content" id="export-dropdown-content">
+                <button class="export-opt" data-format="csv"><i class="fa-solid fa-file-csv color-csv"></i> CSV Spreadsheet</button>
+                <button class="export-opt" data-format="xlsx"><i class="fa-solid fa-file-excel color-excel"></i> Excel Worksheet (.xlsx)</button>
+                <button class="export-opt" data-format="json"><i class="fa-solid fa-file-code color-json"></i> JSON Structure</button>
+                <button class="export-opt" data-format="parquet"><i class="fa-solid fa-cubes color-parquet"></i> Parquet Archive</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Crawled Results Data Table -->
+        <div class="content-card">
+          <div class="card-body p-0 scroll-table-container min-h-300">
+            <table class="data-table" id="results-data-table">
+              <thead>
+                <tr>
+                  <th style="width: 50px;">Rank</th>
+                  <th>Page details / URL</th>
+                  <th style="width: 120px;" class="sortable" data-sort="occurrences">Occurrences <i class="fa-solid fa-sort"></i></th>
+                  <th style="width: 100px;" class="sortable" data-sort="relevance">Relevance <i class="fa-solid fa-sort"></i></th>
+                  <th style="width: 120px;">Location Match</th>
+                  <th style="width: 100px;">Language</th>
+                  <th style="width: 140px;">Status</th>
+                </tr>
+              </thead>
+              <tbody id="results-table-tbody">
+                <!-- Dynamically populated results go here -->
+                <tr>
+                  <td colspan="7" class="text-center py-5 text-muted">
+                    <i class="fa-solid fa-spinner fa-spin fa-2x mb-3 color-cyan"></i>
+                    <p>Crawl run active. Awaiting results streams...</p>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <!-- Pagination -->
+          <div class="card-footer border-top pagination-footer">
+            <span class="text-sm text-muted" id="results-pagination-info">Showing 0-0 of 0 records</span>
+            <div class="pagination-controls">
+              <button class="btn btn-xs btn-outline" id="pagination-prev" disabled><i class="fa-solid fa-chevron-left"></i> Prev</button>
+              <span class="text-sm px-2 font-medium" id="pagination-current-page">1</span>
+              <button class="btn btn-xs btn-outline" id="pagination-next" disabled>Next <i class="fa-solid fa-chevron-right"></i></button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 4: Crawl History -->
+      <section id="history-view" class="view-section">
+        <div class="content-card">
+          <div class="card-header border-bottom">
+            <h2>Execution History Log</h2>
+            <button class="btn btn-sm btn-outline" id="history-refresh-btn"><i class="fa-solid fa-arrows-rotate"></i> Refresh History</button>
+          </div>
+          <div class="card-body p-0 scroll-table-container">
+            <table class="data-table" id="history-main-table">
+              <thead>
+                <tr>
+                  <th>Run ID</th>
+                  <th>Keyword / Search Phrase</th>
+                  <th>Source Mode</th>
+                  <th>Engine</th>
+                  <th>Discovered</th>
+                  <th>Processed</th>
+                  <th>Matched</th>
+                  <th>Status</th>
+                  <th>Execution Date</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="history-main-tbody">
+                <tr>
+                  <td colspan="10" class="text-center py-5 text-muted">
+                    <i class="fa-solid fa-circle-notch fa-spin fa-2x mb-3 text-muted"></i>
+                    <p>Loading scraper history log...</p>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 5: Scheduled Jobs -->
+      <section id="schedules-view" class="view-section">
+        <div class="dashboard-split">
+          <!-- Schedules List Card -->
+          <div class="content-card flex-2">
+            <div class="card-header">
+              <h2>Configured Keyword Schedules</h2>
+            </div>
+            <div class="card-body p-0 scroll-table-container">
+              <table class="data-table" id="schedules-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Keyword / Phrase</th>
+                    <th>Engine</th>
+                    <th>Frequency</th>
+                    <th>Last Scanned</th>
+                    <th>Next Scheduled</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="schedules-tbody">
+                  <tr>
+                    <td colspan="8" class="text-center py-5 text-muted">No scheduled keyword scans configured.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Add Schedule Form Card -->
+          <div class="content-card flex-1">
+            <div class="card-header border-bottom">
+              <h2>Schedule Keyword Scan</h2>
+            </div>
+            <div class="card-body">
+              <form id="schedule-setup-form" class="flex-col gap-3">
+                <div class="form-group">
+                  <label for="sched-keyword" class="form-label">Keyword / Phrase</label>
+                  <input type="text" id="sched-keyword" class="form-control" placeholder="e.g. tech layoffs OR AI startup" required>
+                </div>
+                
+                <div class="form-group">
+                  <label for="sched-frequency" class="form-label">Frequency</label>
+                  <select id="sched-frequency" class="form-control">
+                    <option value="daily">Daily Cron Task</option>
+                    <option value="weekly">Weekly Cron Task</option>
+                    <option value="monthly">Monthly Cron Task</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="sched-engine" class="form-label">Crawl Engine</label>
+                  <select id="sched-engine" class="form-control">
+                    <option value="fast">Fast HTTP Engine</option>
+                    <option value="dynamic">Dynamic Headless Engine</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label class="form-label">Config Options</label>
+                  <div class="toggle-group">
+                    <label class="toggle-control">
+                      <input type="checkbox" id="sched-case-sensitive">
+                      <span class="toggle-slider"></span>
+                      <span>Case Sensitive</span>
+                    </label>
+                    <label class="toggle-control">
+                      <input type="checkbox" id="sched-exact-match">
+                      <span class="toggle-slider"></span>
+                      <span>Exact Match</span>
+                    </label>
+                    <label class="toggle-control">
+                      <input type="checkbox" id="sched-ignore-robots">
+                      <span class="toggle-slider"></span>
+                      <span>Ignore robots.txt</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-actions pt-2 border-top">
+                  <button type="submit" class="btn btn-primary w-full"><i class="fa-solid fa-calendar-plus"></i> Save Schedule</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Detail Popup Modal for Snippet Reading -->
+  <div class="modal-backdrop" id="snippet-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-page-title">Page Snippet Analysis</h3>
+        <button class="modal-close-btn" id="modal-close-btn"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="text-xs text-muted">Page URL</label>
+          <div class="modal-url-display" id="modal-url">https://example.com</div>
+        </div>
+        <div class="form-grid mb-3" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div>
+            <label class="text-xs text-muted">Article Author / Source</label>
+            <div id="modal-author" class="font-medium text-sm color-cyan" style="margin-top: 0.25rem; padding: 0.5rem 0.85rem; background-color: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-glass); border-radius: 8px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">Unknown</div>
+          </div>
+          <div id="modal-image-container" style="display: none;">
+            <label class="text-xs text-muted">Lead Image URL</label>
+            <div style="margin-top: 0.25rem; text-align: center; background-color: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-glass); border-radius: 8px; overflow: hidden; max-height: 38px;">
+              <a id="modal-image-link" href="#" target="_blank" style="display: block; font-size: 0.75rem; padding: 0.5rem 0.85rem; color: var(--accent-violet); text-decoration: none; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; font-weight: 500;">
+                <i class="fa-regular fa-image"></i> View Lead Image
+              </a>
+            </div>
+          </div>
+        </div>
+        <div class="mb-3" id="modal-image-box" style="display: none;">
+          <label class="text-xs text-muted">Lead Article Image</label>
+          <div style="margin-top: 0.35rem; text-align: center; background-color: rgba(0, 0, 0, 0.25); border: 1px solid var(--border-glass); border-radius: 8px; overflow: hidden; max-height: 200px;">
+            <img id="modal-image" src="" alt="Lead Image" style="max-width: 100%; max-height: 200px; object-fit: contain; display: block; margin: 0 auto;">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="text-xs text-muted">Meta Description</label>
+          <div class="snippet-content-box" id="modal-description" style="max-height: 80px; min-height: 40px; padding: 0.5rem 0.85rem; font-style: italic;">
+            No description metadata extracted.
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="text-xs text-muted">Matched Context Snippet</label>
+          <div class="snippet-content-box" id="modal-snippet-content">
+            Snippet text details will go here...
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="text-xs text-muted">Full Scraped Content</label>
+          <div class="snippet-content-box" id="modal-full-content" style="max-height: 200px;">
+            Full clean body content will go here...
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="modal-btn-close">Close Detail View</button>
+        <a href="#" target="_blank" class="btn btn-primary btn-sm" id="modal-btn-visit"><i class="fa-solid fa-arrow-up-right-from-square"></i> Visit Website</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- JavaScript application file -->
+  <script src="app.js?v=1.0.1"></script>
+</body>
+</html>
