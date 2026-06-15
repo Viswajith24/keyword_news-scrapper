@@ -20,7 +20,7 @@ from sqlalchemy import update
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backend.database import SessionLocal
-from backend.models import SearchQuery, CrawledURL
+from backend.models import SearchQuery, CrawledURL, KeywordProgress
 from backend.search_engine import search_web
 from backend.crawler import Crawler
 
@@ -28,6 +28,18 @@ from backend.crawler import Crawler
 # Format: {domain: last_request_time_float}
 DOMAIN_LAST_CRAWL: Dict[str, float] = {}
 domain_lock = threading.Lock()
+
+# Thread-safe tracker for aborted jobs
+ABORTED_JOBS: Dict[int, bool] = {}
+aborted_lock = threading.Lock()
+
+def request_job_stop(search_id: int):
+    with aborted_lock:
+        ABORTED_JOBS[search_id] = True
+
+def is_job_stopped(search_id: int) -> bool:
+    with aborted_lock:
+        return ABORTED_JOBS.get(search_id, False)
 
 # Worker thread variables
 _worker_thread = None
@@ -106,11 +118,18 @@ def crawl_url_task(
         db.close()
         return url_id, {"status": "failed", "error_message": "URL record not found in database."}
 
+    if is_job_stopped(search_id):
+        db.close()
+        return url_id, {"status": "skipped", "error_message": "Job aborted by user."}
+
     url = crawled_url.url
     domain = crawled_url.domain
     
     # 1. Enforce Domain Rate Limiting
     while True:
+        if is_job_stopped(search_id):
+            db.close()
+            return url_id, {"status": "skipped", "error_message": "Job aborted by user."}
         with domain_lock:
             now = time.time()
             last_crawl = DOMAIN_LAST_CRAWL.get(domain, 0.0)
@@ -133,6 +152,7 @@ def crawl_url_task(
     for attempt in range(max_retries):
         try:
             html_content = crawler.fetch_page(url, engine=engine, ignore_robots=ignore_robots)
+            result["error_message"] = None
             break  # Success
         except PermissionError as pe:
             result = {"status": "skipped", "error_message": "Forbidden by robots.txt"}
@@ -213,67 +233,46 @@ def process_search_query(search_id: int):
     db.commit()
 
     try:
-        # Step 1: Gather candidate URLs
-        candidate_urls = []
-        if query.source_type == "direct":
-            candidate_urls = fetch_direct_urls(query.direct_urls, db)
-        else:
-            # Search web via search engine
-            candidate_urls = search_web(query.keyword, max_results=100)
-            
-        # Parse and apply domains_filter
-        domains_include = []
-        domains_exclude = []
-        if query.domains_filter:
-            try:
-                df = json.loads(query.domains_filter)
-                domains_include = [d.lower() for d in df.get("include", []) if d.strip()]
-                domains_exclude = [d.lower() for d in df.get("exclude", []) if d.strip()]
-            except Exception as e:
-                print(f"Error parsing domains_filter: {e}")
+        # Parse list of search keywords
+        keywords_list = []
+        try:
+            # Check if keyword is a JSON list
+            parsed_json = json.loads(query.keyword)
+            if isinstance(parsed_json, list):
+                keywords_list = [str(k).strip() for k in parsed_json if str(k).strip()]
+            else:
+                keywords_list = [str(parsed_json).strip()]
+        except Exception:
+            # If not JSON, check if it's comma-separated or newline-separated
+            if "," in query.keyword or "\n" in query.keyword:
+                keywords_list = [k.strip() for k in re.split(r'[,\n]', query.keyword) if k.strip()]
+            else:
+                keywords_list = [query.keyword.strip()]
 
-        def get_domain(url):
-            d = urlparse(url).netloc.lower()
-            return d[4:] if d.startswith("www.") else d
-
-        if domains_include:
-            candidate_urls = [u for u in candidate_urls if any(get_domain(u).endswith(d) for d in domains_include)]
-        if domains_exclude:
-            candidate_urls = [u for u in candidate_urls if not any(get_domain(u).endswith(d) for d in domains_exclude)]
-
-        if not candidate_urls:
-            query.status = "completed"
-            query.error_message = "No candidate URLs discovered."
-            query.updated_at = datetime.now(timezone.utc)
-            db.commit()
-            db.close()
-            return
-            
-        # Step 2: Initialize database records for candidates
-        db_urls = []
-        for url in candidate_urls:
-            parsed = urlparse(url)
-            domain = parsed.netloc.lower()
-            if domain.startswith("www."):
-                domain = domain[4:]
-                
-            db_url = CrawledURL(
-                search_id=search_id,
-                url=url,
-                domain=domain,
-                status="pending"
-            )
-            db.add(db_url)
-            db_urls.append(db_url)
-            
-        db.commit()
-        
-        # Reload query to bind correctly
-        query.total_urls_found = len(db_urls)
+        # Ensure KeywordProgress records exist for all keywords in the query
+        for kw in keywords_list:
+            kp_record = db.query(KeywordProgress).filter(
+                KeywordProgress.search_query_id == search_id,
+                KeywordProgress.keyword == kw
+            ).first()
+            if not kp_record:
+                kp_record = KeywordProgress(
+                    search_query_id=search_id,
+                    keyword=kw,
+                    status="pending",
+                    articles_found=0
+                )
+                db.add(kp_record)
         db.commit()
 
-        # Step 3: Run Crawler Pool
-        # Parse languages_filter from JSON
+        seen_content_hashes: Set[str] = {
+            c.content_hash for c in db.query(CrawledURL).filter(
+                CrawledURL.search_id == search_id,
+                CrawledURL.content_hash.isnot(None)
+            ).all()
+        }
+
+        # Parse languages_filter from JSON once
         languages_filter = None
         if query.languages_filter:
             try:
@@ -281,77 +280,214 @@ def process_search_query(search_id: int):
             except Exception as e:
                 print(f"Error parsing languages_filter: {e}")
 
-        seen_content_hashes: Set[str] = set()
-        max_workers = 25 if query.engine == "fast" else 4  # Selenium is heavy, limit workers
-        futures = {}
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for db_url in db_urls:
-                # Submit worker tasks
-                future = executor.submit(
-                    crawl_url_task,
-                    url_id=db_url.id,
-                    search_id=search_id,
-                    keyword=query.keyword,
-                    match_type=query.match_type,
-                    case_sensitive=query.case_sensitive,
-                    exact_match=query.exact_match,
-                    engine=query.engine,
-                    ignore_robots=query.ignore_robots,
-                    languages_filter=languages_filter,
-                    date_range_start=query.date_range_start,
-                    date_range_end=query.date_range_end
-                )
-                futures[future] = db_url.id
-                
-            for future in as_completed(futures):
-                if _queue_stop_event.is_set():
-                    break
-                    
-                url_id, result = future.result()
-                
-                # Check for duplicates on successful matches/skips
-                if result.get("content_hash") and result["status"] in ("matched", "skipped"):
-                    h = result["content_hash"]
-                    if h in seen_content_hashes:
-                        result["status"] = "skipped"
-                        result["is_duplicate"] = True
-                        result["error_message"] = "Duplicate page content detected."
-                    else:
-                        seen_content_hashes.add(h)
+        # Sequentially process each keyword
+        for kw in keywords_list:
+            if _queue_stop_event.is_set() or is_job_stopped(search_id):
+                break
 
-                # Write results to DB for this URL
-                db_item = db.query(CrawledURL).filter(CrawledURL.id == url_id).first()
-                if db_item:
-                    for key, val in result.items():
-                        if hasattr(db_item, key):
-                            setattr(db_item, key, val)
-                            
-                    # Update counter stats on query atomically
-                    db.execute(
-                        update(SearchQuery)
-                        .where(SearchQuery.id == search_id)
-                        .values(total_urls_crawled=SearchQuery.total_urls_crawled + 1)
+            kp_record = db.query(KeywordProgress).filter(
+                KeywordProgress.search_query_id == search_id,
+                KeywordProgress.keyword == kw
+            ).first()
+
+            if kp_record and kp_record.status == "completed":
+                print(f"Skipping completed keyword '{kw}' for search {search_id}")
+                continue
+
+            # Mark keyword as processing
+            if kp_record:
+                kp_record.status = "processing"
+                kp_record.started_at = datetime.now(timezone.utc)
+                kp_record.completed_at = None
+                db.commit()
+
+            # Parse domains_filter
+            domains_include = []
+            domains_exclude = []
+            if query.domains_filter:
+                try:
+                    df = json.loads(query.domains_filter)
+                    domains_include = [d.lower() for d in df.get("include", []) if d.strip()]
+                    domains_exclude = [d.lower() for d in df.get("exclude", []) if d.strip()]
+                except Exception as e:
+                    print(f"Error parsing domains_filter: {e}")
+
+            # Step 1: Gather candidate URLs
+            candidate_urls = []
+            if query.source_type == "direct":
+                candidate_urls = fetch_direct_urls(query.direct_urls, db)
+            else:
+                search_query = kw
+                if domains_include:
+                    if len(domains_include) == 1:
+                        search_query = f"{kw} site:{domains_include[0]}"
+                    else:
+                        search_query = f"{kw} (" + " OR ".join(f"site:{d}" for d in domains_include) + ")"
+                # Search web via search engine specifically for this keyword
+                candidate_urls = search_web(search_query, max_results=100)
+
+            def get_domain(url):
+                d = urlparse(url).netloc.lower()
+                return d[4:] if d.startswith("www.") else d
+
+            if domains_include:
+                candidate_urls = [u for u in candidate_urls if any(get_domain(u).endswith(d) for d in domains_include)]
+            if domains_exclude:
+                candidate_urls = [u for u in candidate_urls if not any(get_domain(u).endswith(d) for d in domains_exclude)]
+
+            if not candidate_urls:
+                if kp_record:
+                    kp_record.status = "completed"
+                    kp_record.articles_found = 0
+                    kp_record.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                continue
+                
+            # Step 2: Initialize database records for candidates
+            db_urls = []
+            for url in candidate_urls:
+                parsed = urlparse(url)
+                domain = parsed.netloc.lower()
+                if domain.startswith("www."):
+                    domain = domain[4:]
+                    
+                db_url = db.query(CrawledURL).filter(
+                    CrawledURL.search_id == search_id,
+                    CrawledURL.url == url
+                ).first()
+                if not db_url:
+                    db_url = CrawledURL(
+                        search_id=search_id,
+                        url=url,
+                        domain=domain,
+                        status="pending"
                     )
-                    if db_item.status == "matched":
+                    db.add(db_url)
+                    db.commit()
+                    db_urls.append(db_url)
+                else:
+                    if db_url.status in ("pending", "failed"):
+                        db_urls.append(db_url)
+                
+            db.commit()
+            
+            # Update overall total unique URLs found count
+            unique_urls_count = db.query(CrawledURL).filter(CrawledURL.search_id == search_id).count()
+            query.total_urls_found = unique_urls_count
+            db.commit()
+
+            # Step 3: Run Crawler Pool for this keyword
+            if query.engine == "fast":
+                max_workers = 25
+            elif query.engine == "lightpanda":
+                max_workers = 10  # Lightpanda is lighter than Chrome but heavier than requests
+            else:
+                max_workers = 4   # Selenium / dynamic stays at 4
+            futures = {}
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for db_url in db_urls:
+                    # Submit worker tasks
+                    future = executor.submit(
+                        crawl_url_task,
+                        url_id=db_url.id,
+                        search_id=search_id,
+                        keyword=query.keyword,
+                        match_type=query.match_type,
+                        case_sensitive=query.case_sensitive,
+                        exact_match=query.exact_match,
+                        engine=query.engine,
+                        ignore_robots=query.ignore_robots,
+                        languages_filter=languages_filter,
+                        date_range_start=query.date_range_start,
+                        date_range_end=query.date_range_end
+                    )
+                    futures[future] = db_url.id
+                    
+                for future in as_completed(futures):
+                    if _queue_stop_event.is_set() or is_job_stopped(search_id):
+                        break
+                        
+                    url_id, result = future.result()
+                    
+                    # Check for duplicates on successful matches/skips
+                    if result.get("content_hash") and result["status"] in ("matched", "skipped"):
+                        h = result["content_hash"]
+                        if h in seen_content_hashes:
+                            result["status"] = "skipped"
+                            result["is_duplicate"] = True
+                            result["error_message"] = "Duplicate page content detected."
+                        else:
+                            seen_content_hashes.add(h)
+
+                    # Write results to DB for this URL
+                    db_item = db.query(CrawledURL).filter(CrawledURL.id == url_id).first()
+                    if db_item:
+                        for key, val in result.items():
+                            if hasattr(db_item, key):
+                                setattr(db_item, key, val)
+                                
+                        db.flush()
+                        
+                        # Update counter stats on query atomically based on unique rows in database
+                        crawled_count = db.query(CrawledURL).filter(
+                            CrawledURL.search_id == search_id,
+                            CrawledURL.status != "pending"
+                        ).count()
+                        
+                        matched_count = db.query(CrawledURL).filter(
+                            CrawledURL.search_id == search_id,
+                            CrawledURL.status == "matched"
+                        ).count()
+                        
                         db.execute(
                             update(SearchQuery)
                             .where(SearchQuery.id == search_id)
-                            .values(total_urls_matched=SearchQuery.total_urls_matched + 1)
+                            .values(
+                                total_urls_crawled=crawled_count,
+                                total_urls_matched=matched_count
+                            )
                         )
-                    db.commit()
+                        db.commit()
 
-        # Complete run
-        query.status = "completed"
-        query.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        
+            # Mark keyword as completed or failed/aborted
+            if is_job_stopped(search_id):
+                if kp_record:
+                    kp_record.status = "failed"
+                    kp_record.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                break
+
+            keyword_articles_found = db.query(CrawledURL).filter(
+                CrawledURL.search_id == search_id,
+                CrawledURL.id.in_([u.id for u in db_urls]),
+                CrawledURL.status == "matched"
+            ).count()
+
+            if kp_record:
+                kp_record.status = "completed"
+                kp_record.articles_found = keyword_articles_found
+                kp_record.completed_at = datetime.now(timezone.utc)
+                db.commit()
+
+        # Complete run if not stopped/aborted
+        if is_job_stopped(search_id):
+            query.status = "aborted"
+            query.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        elif not _queue_stop_event.is_set():
+            query.status = "completed"
+            query.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            
     except Exception as e:
         query.status = "failed"
         query.error_message = f"Queue Worker Error: {str(e)}"
         query.updated_at = datetime.now(timezone.utc)
         db.commit()
     finally:
+        with aborted_lock:
+            ABORTED_JOBS.pop(search_id, None)
         db.close()
 
 def queue_worker_loop():

@@ -8,6 +8,7 @@
 # - Added langdetect library fallback to detect_language if HTML tags yield None.
 
 import re
+import json
 import hashlib
 import urllib.parse
 import urllib.robotparser
@@ -28,18 +29,75 @@ try:
 except ImportError:
     SELENIUM_AVAILABLE = False
 
+# Try importing Playwright for Lightpanda integration (CDP path)
+try:
+    from playwright.sync_api import sync_playwright
+    LIGHTPANDA_AVAILABLE = True
+except ImportError:
+    LIGHTPANDA_AVAILABLE = False
+
 # Thread-safe LRU + TTL Cache for robots.txt parsers
 # Format: domain: (RobotFileParser, fetched_at_float)
 ROBOTS_CACHE: collections.OrderedDict = collections.OrderedDict()
 ROBOTS_CACHE_LOCK = threading.Lock()
 
+def get_chrome_user_agent_details() -> Tuple[str, str]:
+    """Dynamically checks Windows registry to construct a User-Agent and its matching major version."""
+    import winreg
+    version = "120.0.0.0" # Default fallback
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
+        v, _ = winreg.QueryValueEx(key, "version")
+        if v:
+            version = v
+    except Exception:
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Google Chrome")
+            v, _ = winreg.QueryValueEx(key, "DisplayVersion")
+            if v:
+                version = v
+        except Exception:
+            pass
+    major_version = version.split(".")[0]
+    user_agent = f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
+    return user_agent, major_version
+
+def patch_chromedriver_if_needed(driver_path: str):
+    """Checks if the chromedriver binary is patched; if not, replaces the cdc_ automation variables."""
+    import os
+    if not driver_path or not os.path.exists(driver_path):
+        return
+    try:
+        with open(driver_path, 'rb') as f:
+            data = f.read()
+        
+        import re
+        pattern = re.compile(b"cdc_[a-zA-Z0-9_]+")
+        matches = pattern.findall(data)
+        
+        if not matches:
+            return  # Already patched or different structure
+            
+        # Replace cdc_ with dog_ to avoid signature detection
+        new_data = data
+        for match in set(matches):
+            replacement = match.replace(b"cdc_", b"dog_")
+            new_data = new_data.replace(match, replacement)
+            
+        with open(driver_path, 'wb') as f:
+            f.write(new_data)
+        print(f"[Stealth] Successfully patched chromedriver binary: {driver_path}")
+    except Exception as e:
+        print(f"[Stealth Warning] Failed to patch chromedriver: {e}")
+
 class Crawler:
-    def __init__(self, user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"):
-        self.user_agent = user_agent
+    def __init__(self, user_agent: str = None):
+        dynamic_ua, major_version = get_chrome_user_agent_details()
+        self.user_agent = user_agent or dynamic_ua
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": self.user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Language": "en-US,en;q=0.9",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
@@ -47,6 +105,9 @@ class Crawler:
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
+            "sec-ch-ua": f'"Not A(Brand";v="99", "Google Chrome";v="{major_version}", "Chromium";v="{major_version}"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
             "Cache-Control": "max-age=0"
         })
         
@@ -62,17 +123,54 @@ class Crawler:
         with self._driver_lock:
             if self._driver is None:
                 chrome_options = Options()
-                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--headless=new")
+                chrome_options.add_argument("--window-size=1920,1080")
                 chrome_options.add_argument("--disable-gpu")
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument(f"--user-agent={self.user_agent}")
                 
+                # Avoid bot detection by hiding automation controls
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
+                
                 # Use webdriver-manager to get driver path automatically
-                service = Service(ChromeDriverManager().install())
+                driver_path = ChromeDriverManager().install()
+                # Apply local binary patching to replace cdc_ automation signatures on the fly
+                patch_chromedriver_if_needed(driver_path)
+                
+                service = Service(driver_path)
                 self._driver = webdriver.Chrome(service=service, options=chrome_options)
+                
+                # Execute CDP command to remove the navigator.webdriver property completely
+                self._driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                })
             
         return self._driver
+
+    def _fetch_lightpanda(self, url: str) -> str:
+        """
+        Fetches the HTML of a page using Lightpanda's browser engine via the
+        Chrome DevTools Protocol (CDP) connection with Playwright.
+        
+        This method connects to Lightpanda's CDP endpoint (default: ws://localhost:9222)
+        using Playwright's synchronous API, navigates to the target URL, and returns
+        the page content.
+        """
+        if not LIGHTPANDA_AVAILABLE:
+            raise RuntimeError("Playwright is not installed in the current environment.")
+        
+        endpoint = "ws://localhost:9222"
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(endpoint)
+            try:
+                page = browser.new_page()
+                page.goto(url)
+                return page.content()
+            finally:
+                browser.close()
 
     def _get_robots_parser(self, domain: str, robots_url: str) -> urllib.robotparser.RobotFileParser:
         """Retrieves or fetches the RobotFileParser for a domain using an LRU+TTL cache (24h TTL, 1000 entry max)."""
@@ -111,16 +209,30 @@ class Crawler:
 
     def close(self):
         """Safely shuts down selenium driver if open."""
-        with self._driver_lock:
-            if self._driver:
+        lock = getattr(self, "_driver_lock", None)
+        if lock:
+            with lock:
+                driver = getattr(self, "_driver", None)
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    self._driver = None
+        else:
+            driver = getattr(self, "_driver", None)
+            if driver:
                 try:
-                    self._driver.quit()
+                    driver.quit()
                 except Exception:
                     pass
                 self._driver = None
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def is_allowed_by_robots(self, url: str) -> bool:
         """Checks if the path can be crawled according to robots.txt."""
@@ -151,6 +263,15 @@ class Crawler:
                 # Fallback to HTTP requests on selenium error
                 print(f"Selenium fetch failed, falling back to HTTP: {e}")
                 return self._fetch_http(url)
+        elif engine == "lightpanda" and LIGHTPANDA_AVAILABLE:
+            try:
+                return self._fetch_lightpanda(url)
+            except Exception as e:
+                print(f"Lightpanda fetch failed, falling back to HTTP: {e}")
+                return self._fetch_http(url)
+        elif engine == "lightpanda" and not LIGHTPANDA_AVAILABLE:
+            print("Lightpanda not installed. Falling back to fast engine.")
+            return self._fetch_http(url)
         else:
             try:
                 return self._fetch_http(url)
@@ -261,8 +382,8 @@ class Crawler:
                 
         # 3. Try inline author elements
         author_elements = [
-            soup.find(class_=re.compile("author|byline|writer", re.I)) if 're' in globals() else None,
-            soup.find(id=re.compile("author|byline|writer", re.I)) if 're' in globals() else None
+            soup.find(class_=re.compile("author|byline|writer", re.I)),
+            soup.find(id=re.compile("author|byline|writer", re.I))
         ]
         for element in author_elements:
             if element:
@@ -483,107 +604,126 @@ class Crawler:
         found_in_url = False
         
         # Prepare list of search terms
-        import json
+        is_keyword_free = not keyword or not keyword.strip()
+        
         search_terms_list = []
-        try:
-            # Check if keyword is a JSON list
-            parsed_json = json.loads(keyword)
-            if isinstance(parsed_json, list):
-                search_terms_list = [str(k).strip() for k in parsed_json if str(k).strip()]
-            else:
-                search_terms_list = [str(parsed_json).strip()]
-        except Exception:
-            # If not JSON, check if it's comma-separated or newline-separated
-            if "," in keyword or "\n" in keyword:
-                search_terms_list = [k.strip() for k in re.split(r'[,\n]', keyword) if k.strip()]
-            else:
-                search_terms_list = [keyword.strip()]
+        if not is_keyword_free:
+            try:
+                # Check if keyword is a JSON list
+                parsed_json = json.loads(keyword)
+                if isinstance(parsed_json, list):
+                    search_terms_list = [str(k).strip() for k in parsed_json if str(k).strip()]
+                else:
+                    search_terms_list = [str(parsed_json).strip()]
+            except Exception:
+                # If not JSON, check if it's comma-separated or newline-separated
+                if "," in keyword or "\n" in keyword:
+                    search_terms_list = [k.strip() for k in re.split(r'[,\n]', keyword) if k.strip()]
+                else:
+                    search_terms_list = [keyword.strip()]
+            search_terms_list = list(dict.fromkeys(search_terms_list))
 
-        search_terms = set()
-        if match_type == "boolean":
-            # Extract plain terms from boolean expression (words/phrases in quotes or alphanumeric)
-            search_terms = set(re.findall(r'"([^"]+)"|(\b\w+\b)', keyword))
-            # Flatten tuples from findall
-            search_terms = {t[0] or t[1] for t in search_terms if t[0] or t[1]}
-            search_terms = {t for t in search_terms if t.upper() not in ("AND", "OR", "NOT")}
+        # Check locations and count occurrences
+        if is_keyword_free:
+            matched = True
+            total_occurrences = 0
+            found_in_title = False
+            found_in_description = False
+            found_in_body = False
+            found_in_url = False
+            matched_keywords_found = []
+            search_terms = set()
         else:
             search_terms = set(search_terms_list)
-            
-        # Count occurrences in each location
-        def count_occurrences(text_content: str, terms: Set[str]) -> int:
-            count = 0
-            for term in terms:
-                if exact_match:
-                    # Match exact words using regex word boundaries
-                    pattern = rf"\b{re.escape(term)}\b"
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    count += len(re.findall(pattern, text_content, flags))
-                else:
-                    # Match substrings
-                    if case_sensitive:
-                        count += text_content.count(term)
+            if match_type == "boolean":
+                # Extract plain terms from boolean expression (words/phrases in quotes or alphanumeric)
+                search_terms = set(re.findall(r'"([^"]+)"|(\b\w+\b)', keyword))
+                # Flatten tuples from findall
+                search_terms = {t[0] or t[1] for t in search_terms if t[0] or t[1]}
+                search_terms = {t for t in search_terms if t.upper() not in ("AND", "OR", "NOT")}
+                
+            # Count occurrences in each location
+            def count_occurrences(text_content: str, terms: Set[str]) -> int:
+                count = 0
+                for term in terms:
+                    if exact_match:
+                        # Match exact words using regex word boundaries
+                        pattern = rf"\b{re.escape(term)}\b"
+                        flags = 0 if case_sensitive else re.IGNORECASE
+                        count += len(re.findall(pattern, text_content, flags))
                     else:
-                        count += text_content.lower().count(term.lower())
-            return count
+                        # Match substrings
+                        if case_sensitive:
+                            count += text_content.count(term)
+                        else:
+                            count += text_content.lower().count(term.lower())
+                return count
 
-        # Check locations
-        found_in_url = count_occurrences(url, search_terms) > 0
-        
-        title_count = count_occurrences(title, search_terms)
-        found_in_title = title_count > 0
-        
-        desc_count = count_occurrences(description, search_terms)
-        found_in_description = desc_count > 0
-        
-        body_count = count_occurrences(body_text, search_terms)
-        found_in_body = body_count > 0
-        
-        total_occurrences = title_count + desc_count + body_count + (1 if found_in_url else 0)
+            found_in_url = count_occurrences(url, search_terms) > 0
+            
+            title_count = count_occurrences(title, search_terms)
+            found_in_title = title_count > 0
+            
+            desc_count = count_occurrences(description, search_terms)
+            found_in_description = desc_count > 0
+            
+            body_count = count_occurrences(body_text, search_terms)
+            found_in_body = body_count > 0
+            
+            total_occurrences = title_count + desc_count + body_count + (1 if found_in_url else 0)
 
-        # Track which specific keywords matched
-        matched_keywords_found = []
-        for term in (search_terms if match_type == "boolean" else search_terms_list):
-            term_set = {term}
-            if (count_occurrences(url, term_set) > 0 or 
-                count_occurrences(title, term_set) > 0 or 
-                count_occurrences(description, term_set) > 0 or 
-                count_occurrences(body_text, term_set) > 0):
-                matched_keywords_found.append(term)
-        
-        # Evaluate boolean query matching if match_type is boolean
-        if match_type == "boolean":
-            # We check the entire full text combining title, description, body, url
-            full_crawlable_text = f"{title}\n{description}\n{body_text}\n{url}"
-            matched = self.evaluate_boolean_query(full_crawlable_text, keyword, case_sensitive)
-        else:
-            matched = total_occurrences > 0
+            # Track which specific keywords matched
+            matched_keywords_found = []
+            for term in (search_terms if match_type == "boolean" else search_terms_list):
+                term_set = {term}
+                if (count_occurrences(url, term_set) > 0 or 
+                    count_occurrences(title, term_set) > 0 or 
+                    count_occurrences(description, term_set) > 0 or 
+                    count_occurrences(body_text, term_set) > 0):
+                    matched_keywords_found.append(term)
+            
+            # Evaluate boolean query matching if match_type is boolean
+            if match_type == "boolean":
+                # We check the entire full text combining title, description, body, url
+                full_crawlable_text = f"{title}\n{description}\n{body_text}\n{url}"
+                matched = self.evaluate_boolean_query(full_crawlable_text, keyword, case_sensitive)
+            else:
+                # Require that all searched keywords are found in the parsed content (AND logic)
+                matched = len(matched_keywords_found) == len(search_terms_list)
 
         # 4. Snippet Generation
         snippet = ""
         if matched:
-            snippet = self.generate_snippet(body_text, search_terms)
+            if is_keyword_free:
+                normalized_text = " ".join(body_text.split())
+                snippet = normalized_text[:150] + "..." if len(normalized_text) > 150 else normalized_text
+            else:
+                snippet = self.generate_snippet(body_text, search_terms)
             
         # 5. Relevance Scoring (0-100)
         relevance_score = 0.0
         if matched:
-            # Weights: Title (35pts), Description (15pts), URL (10pts), Body density (40pts)
-            if found_in_title:
-                relevance_score += 35
-            if found_in_description:
-                relevance_score += 15
-            if found_in_url:
-                relevance_score += 10
-                
-            # Density score (up to 40pts)
-            words = body_text.split()
-            word_count = len(words)
-            if word_count > 0 and body_count > 0:
-                density = body_count / word_count
-                # Peak density is 2% = full 40 points
-                density_score = min(40.0, density * 2000.0)
-                relevance_score += density_score
-                
-            relevance_score = round(relevance_score, 1)
+            if is_keyword_free:
+                relevance_score = 100.0
+            else:
+                # Weights: Title (35pts), Description (15pts), URL (10pts), Body density (40pts)
+                if found_in_title:
+                    relevance_score += 35
+                if found_in_description:
+                    relevance_score += 15
+                if found_in_url:
+                    relevance_score += 10
+                    
+                # Density score (up to 40pts)
+                words = body_text.split()
+                word_count = len(words)
+                if word_count > 0 and body_count > 0:
+                    density = body_count / word_count
+                    # Peak density is 2% = full 40 points
+                    density_score = min(40.0, density * 2000.0)
+                    relevance_score += density_score
+                    
+                relevance_score = round(relevance_score, 1)
 
         return {
             "title": title[:200] if title else "Untitled",
@@ -603,5 +743,5 @@ class Crawler:
             "image_url": image_url,
             "relevance_score": relevance_score,
             "matched": matched,
-            "matched_keywords": json.dumps(matched_keywords_found) if matched else "[]"
+            "matched_keywords": json.dumps(matched_keywords_found)
         }

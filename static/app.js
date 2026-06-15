@@ -112,15 +112,33 @@ function initForms() {
   
   let sourceMode = 'search'; // 'search' or 'direct'
 
+  const disableKeywordFilterChk = document.getElementById('chk-disable-keyword-filter');
+  const groupDisableKeywordFilter = document.getElementById('form-group-disable-keyword-filter');
+  const groupDirectKeywords = document.getElementById('form-group-direct-keywords');
+  const directKeywordsInput = document.getElementById('direct-keywords-input');
+
+  disableKeywordFilterChk.addEventListener('change', () => {
+    if (disableKeywordFilterChk.checked) {
+      groupDirectKeywords.classList.add('d-none');
+      directKeywordsInput.removeAttribute('required');
+      directKeywordsInput.value = '';
+    } else {
+      groupDirectKeywords.classList.remove('d-none');
+      directKeywordsInput.setAttribute('required', 'true');
+    }
+  });
+
   tabSearch.addEventListener('click', (e) => {
     e.preventDefault();
     tabSearch.classList.add('active');
     tabDirect.classList.remove('active');
     groupKeyword.classList.remove('d-none');
     groupDirect.classList.add('d-none');
-    document.getElementById('form-group-direct-keywords').classList.add('d-none');
+    groupDisableKeywordFilter.classList.add('d-none');
+    groupDirectKeywords.classList.add('d-none');
+    disableKeywordFilterChk.checked = false;
     document.getElementById('keyword-input').setAttribute('required', 'true');
-    document.getElementById('direct-keywords-input').removeAttribute('required');
+    directKeywordsInput.removeAttribute('required');
     sourceMode = 'search';
   });
 
@@ -129,10 +147,17 @@ function initForms() {
     tabDirect.classList.add('active');
     tabSearch.classList.remove('active');
     groupDirect.classList.remove('d-none');
-    document.getElementById('form-group-direct-keywords').classList.remove('d-none');
+    groupDisableKeywordFilter.classList.remove('d-none');
     groupKeyword.classList.add('d-none');
     document.getElementById('keyword-input').removeAttribute('required');
-    document.getElementById('direct-keywords-input').setAttribute('required', 'true');
+    
+    if (disableKeywordFilterChk.checked) {
+      groupDirectKeywords.classList.add('d-none');
+      directKeywordsInput.removeAttribute('required');
+    } else {
+      groupDirectKeywords.classList.remove('d-none');
+      directKeywordsInput.setAttribute('required', 'true');
+    }
     sourceMode = 'direct';
   });
 
@@ -144,14 +169,21 @@ function initForms() {
     const origHtml = submitBtn.innerHTML;
     submitBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Initializing Crawl...';
     submitBtn.disabled = true;
-
+  
     try {
       const keyword = document.getElementById('keyword-input').value.trim();
       const directUrls = document.getElementById('direct-urls-input').value.trim();
-      const directKeywords = document.getElementById('direct-keywords-input').value.trim();
+      const directKeywords = directKeywordsInput.value.trim();
       
+      let targetKeyword = '';
+      if (sourceMode === 'search') {
+        targetKeyword = keyword;
+      } else {
+        targetKeyword = disableKeywordFilterChk.checked ? '' : directKeywords;
+      }
+
       const payload = {
-        keyword: sourceMode === 'search' ? keyword : directKeywords,
+        keyword: targetKeyword,
         match_type: document.querySelector('input[name="match-type"]:checked').value,
         case_sensitive: document.getElementById('chk-case-sensitive').checked,
         exact_match: document.getElementById('chk-exact-match').checked,
@@ -239,7 +271,6 @@ function initAccordion() {
 // 4. Results Toolbar Filters & Exports
 function initResultsToolbar() {
   const searchInput = document.getElementById('results-search-input');
-  const statusFilter = document.getElementById('results-status-filter');
   const excludeDupes = document.getElementById('chk-exclude-duplicates');
   const prevBtn = document.getElementById('pagination-prev');
   const nextBtn = document.getElementById('pagination-next');
@@ -255,14 +286,15 @@ function initResultsToolbar() {
     }, 300);
   });
 
-  statusFilter.addEventListener('change', () => {
-    appState.filters.status = statusFilter.value;
+  excludeDupes.addEventListener('change', () => {
+    appState.filters.excludeDuplicates = excludeDupes.checked;
     appState.filters.page = 1;
     renderResultsTable();
   });
 
-  excludeDupes.addEventListener('change', () => {
-    appState.filters.excludeDuplicates = excludeDupes.checked;
+  const statusFilter = document.getElementById('results-status-filter');
+  statusFilter.addEventListener('change', () => {
+    appState.filters.status = statusFilter.value;
     appState.filters.page = 1;
     renderResultsTable();
   });
@@ -392,12 +424,30 @@ async function pollSearchResults() {
     document.getElementById('progress-stat-found').innerText = meta.total_urls_found;
     document.getElementById('progress-stat-crawled').innerText = meta.total_urls_crawled;
     document.getElementById('progress-stat-matched').innerText = meta.total_urls_matched;
-    document.getElementById('progress-stat-engine').innerText = meta.engine === 'fast' ? 'Fast HTTP' : 'Headless Chrome';
+    document.getElementById('progress-stat-engine').innerText = meta.engine === 'fast' ? 'Fast HTTP' : (meta.engine === 'lightpanda' ? 'Lightpanda JS' : 'Headless Chrome');
     
     // Update badge status
     const badge = document.getElementById('progress-status-badge');
     badge.className = `badge badge-${meta.status}`;
     badge.innerText = meta.status;
+
+    // Update progress banner actions (Abort/Retry)
+    const actionsContainer = document.getElementById('progress-actions-container');
+    if (actionsContainer) {
+      if (meta.status === 'processing' || meta.status === 'pending') {
+        actionsContainer.innerHTML = `
+          <button class="btn btn-xs btn-outline btn-abort" onclick="abortActiveSearch(${meta.id})" title="Stop this active crawl process">
+            <i class="fa-solid fa-ban"></i> Abort
+          </button>
+        `;
+      } else {
+        actionsContainer.innerHTML = `
+          <button class="btn btn-xs btn-primary btn-retry" onclick="retrySearch(${meta.id})" title="Duplicate run config and search again">
+            <i class="fa-solid fa-redo"></i> Retry
+          </button>
+        `;
+      }
+    }
 
     // Calculate percentage
     let percent = 0;
@@ -421,9 +471,17 @@ async function pollSearchResults() {
     // Render tables
     renderResultsTable();
 
+    // Reset error count on successful fetch
+    appState.pollingErrors = 0;
+
   } catch (err) {
     console.error('Error polling scraper state:', err);
-    clearInterval(appState.activeSearchPollingId);
+    appState.pollingErrors = (appState.pollingErrors || 0) + 1;
+    if (appState.pollingErrors >= 5) {
+      console.warn('Stopping polling after 5 consecutive failures.');
+      clearInterval(appState.activeSearchPollingId);
+      appState.activeSearchPollingId = null;
+    }
   }
 }
 
@@ -441,7 +499,7 @@ function getFilteredResults() {
     );
   }
 
-  // 2. Dropdown status filters
+  // 2. Status filter
   if (appState.filters.status) {
     list = list.filter(item => item.status === appState.filters.status);
   }
@@ -513,7 +571,9 @@ function renderResultsTable() {
     // Set status badge style class
     let badgeClass = 'badge-skipped';
     if (item.status === 'matched') badgeClass = 'badge-matched';
-    if (item.status === 'failed') badgeClass = 'badge-failed';
+    else if (item.status === 'failed') badgeClass = 'badge-failed';
+    else if (item.status === 'pending') badgeClass = 'badge-pending';
+    else if (item.status === 'crawling' || item.status === 'processing') badgeClass = 'badge-crawling';
     if (item.is_duplicate) badgeClass = 'badge-duplicate';
 
     // Tags list showing match locations
@@ -557,6 +617,9 @@ function renderResultsTable() {
       }
     }
 
+    let displayStatus = item.status || 'unknown';
+    if (item.is_duplicate) displayStatus = 'duplicate';
+
     rowsHtml += `
       <tr>
         <td class="text-center font-medium color-text-muted">#${rank}</td>
@@ -582,10 +645,7 @@ function renderResultsTable() {
           </div>
         </td>
         <td class="text-center">${escapeHtml(item.language || 'N/A').toUpperCase()}</td>
-        <td>
-          <span class="badge ${badgeClass}">${item.is_duplicate ? 'Duplicate' : item.status}</span>
-          ${item.error_message ? `<div class="text-xs text-muted mt-1" style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(item.error_message)}">${escapeHtml(item.error_message)}</div>` : ''}
-        </td>
+        <td><span class="badge ${badgeClass}">${displayStatus}</span></td>
       </tr>
     `;
   });
@@ -643,12 +703,19 @@ async function loadHistoryList() {
       const execDate = new Date(item.created_at).toLocaleString();
       let badgeClass = `badge-${item.status}`;
       
+      let actionBtnHtml = '';
+      if (item.status === 'processing' || item.status === 'pending') {
+        actionBtnHtml = `<button class="table-act-btn abort-btn" onclick="abortActiveSearch(${item.id})" title="Abort Active Run"><i class="fa-solid fa-ban"></i></button>`;
+      } else {
+        actionBtnHtml = `<button class="table-act-btn retry-btn" onclick="retrySearch(${item.id})" title="Retry Run"><i class="fa-solid fa-redo"></i></button>`;
+      }
+
       rows += `
         <tr>
           <td>${item.id}</td>
           <td><strong>${escapeHtml(item.keyword)}</strong></td>
           <td><span class="badge badge-skipped">${item.source_type.toUpperCase()}</span></td>
-          <td>${item.engine === 'fast' ? 'Fast HTTP' : 'Headless Chrome'}</td>
+          <td>${item.engine === 'fast' ? 'Fast HTTP' : (item.engine === 'lightpanda' ? 'Lightpanda JS' : 'Headless Chrome')}</td>
           <td>${item.total_urls_found}</td>
           <td>${item.total_urls_crawled}</td>
           <td>${item.total_urls_matched}</td>
@@ -657,6 +724,7 @@ async function loadHistoryList() {
           <td>
             <div class="flex-row-gap">
               <button class="table-act-btn" onclick="startResultsMonitor(${item.id})" title="View Details"><i class="fa-solid fa-circle-info"></i></button>
+              ${actionBtnHtml}
               <button class="table-act-btn" onclick="downloadDirectExcel(${item.id})" title="Download Excel"><i class="fa-solid fa-file-excel"></i></button>
               <button class="table-act-btn delete-btn" onclick="deleteHistoryRun(${item.id})" title="Delete Run"><i class="fa-solid fa-trash-can"></i></button>
             </div>
@@ -733,6 +801,61 @@ async function deleteHistoryRun(searchId) {
   }
 }
 
+async function abortActiveSearch(searchId) {
+  if (!confirm('Are you sure you want to stop this active crawl run?')) return;
+
+  try {
+    const response = await fetch(`${API_BASE}/api/search/${searchId}/stop`, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer changeme'
+      }
+    });
+    if (!response.ok) throw new Error('Abort request failed');
+    
+    alert('Stop signal sent to the crawl run successfully.');
+    // Poll results immediately to reflect state change
+    pollSearchResults();
+    loadHistoryList();
+    loadDashboardData();
+  } catch (err) {
+    alert(`Could not abort run: ${err.message}`);
+  }
+}
+
+async function retrySearch(searchId) {
+  if (!confirm('Are you sure you want to retry this keyword scan? This will launch a new run with the exact same settings.')) return;
+
+  try {
+    const response = await fetch(`${API_BASE}/api/search/${searchId}/retry`, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer changeme'
+      }
+    });
+    if (!response.ok) throw new Error('Retry request failed');
+
+    const newQuery = await response.json();
+    alert(`Crawl run successfully retried! New Run ID: ${newQuery.id}`);
+    
+    // Switch live monitor to the new query ID
+    startResultsMonitor(newQuery.id);
+    loadHistoryList();
+    loadDashboardData();
+  } catch (err) {
+    alert(`Could not retry run: ${err.message}`);
+  }
+}
+
+// Expose functions globally for dynamic HTML onclick hooks
+window.abortActiveSearch = abortActiveSearch;
+window.retrySearch = retrySearch;
+window.startResultsMonitor = startResultsMonitor;
+window.deleteHistoryRun = deleteHistoryRun;
+window.deleteScheduleJob = deleteScheduleJob;
+window.downloadDirectExcel = downloadDirectExcel;
+window.openSnippetModal = openSnippetModal;
+
 // 8. Schedules view Actions
 async function loadScheduleList() {
   const tbody = document.getElementById('schedules-tbody');
@@ -766,7 +889,7 @@ async function loadScheduleList() {
         <tr>
           <td>${item.id}</td>
           <td><strong>${escapeHtml(item.keyword)}</strong></td>
-          <td>${item.engine === 'fast' ? 'Fast HTTP' : 'Headless Chrome'}</td>
+          <td>${item.engine === 'fast' ? 'Fast HTTP' : (item.engine === 'lightpanda' ? 'Lightpanda JS' : 'Headless Chrome')}</td>
           <td><span class="badge badge-pending">${item.frequency.toUpperCase()}</span></td>
           <td class="text-muted text-xs">${lastRun}</td>
           <td class="text-muted text-xs font-medium color-cyan">${nextRun}</td>
@@ -902,7 +1025,7 @@ async function loadDashboardData() {
         <tr>
           <td>${item.id}</td>
           <td><strong>${escapeHtml(item.keyword)}</strong></td>
-          <td>${item.engine === 'fast' ? 'Fast' : 'Dynamic'}</td>
+          <td>${item.engine === 'fast' ? 'Fast' : (item.engine === 'lightpanda' ? 'Lightpanda' : 'Dynamic')}</td>
           <td><span class="badge badge-skipped">${item.source_type.toUpperCase()}</span></td>
           <td>${item.total_urls_crawled} / ${item.total_urls_found}</td>
           <td><span class="badge ${badgeClass}">${item.status}</span></td>

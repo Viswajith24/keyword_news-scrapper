@@ -198,6 +198,7 @@ def scrape_duckduckgo_selenium(query: str) -> List[str]:
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.chrome.service import Service
         from webdriver_manager.chrome import ChromeDriverManager
+        from backend.crawler import get_chrome_user_agent_details, patch_chromedriver_if_needed
     except ImportError:
         print("[WARNING] Selenium not installed, skipping Selenium DDG fallback.")
         return []
@@ -206,14 +207,31 @@ def scrape_duckduckgo_selenium(query: str) -> List[str]:
     try:
         print(f"[INFO] Initiating Selenium DuckDuckGo scraper for query: '{query}'...")
         chrome_options = Options()
-        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--headless=new")
+        chrome_options.add_argument("--window-size=1920,1080")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
         
-        service = Service(ChromeDriverManager().install())
+        dynamic_ua, _ = get_chrome_user_agent_details()
+        chrome_options.add_argument(f"--user-agent={dynamic_ua}")
+        
+        # Avoid bot detection by hiding automation controls
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        
+        driver_path = ChromeDriverManager().install()
+        # Patch chromedriver binary on the fly to remove cdc_ signature
+        patch_chromedriver_if_needed(driver_path)
+        
+        service = Service(driver_path)
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Execute CDP command to remove the navigator.webdriver property completely
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
         
         search_url = f"https://duckduckgo.com/?q={urllib.parse.quote(query)}"
         driver.get(search_url)

@@ -34,6 +34,7 @@ class SearchQuery(Base):
 
     # Relationships
     crawled_urls = relationship("CrawledURL", back_populates="search_query", cascade="all, delete-orphan")
+    keyword_progress = relationship("KeywordProgress", back_populates="search_query", cascade="all, delete-orphan")
 
 
 class CrawledURL(Base):
@@ -79,3 +80,18 @@ class SearchSchedule(Base):
     last_run = Column(DateTime(timezone=True), nullable=True)
     next_run = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class KeywordProgress(Base):
+    __tablename__ = "keyword_progress"
+
+    id = Column(Integer, primary_key=True, index=True)
+    search_query_id = Column(Integer, ForeignKey("search_queries.id", ondelete="CASCADE"), nullable=False, index=True)
+    keyword = Column(String, nullable=False, index=True)
+    status = Column(String, default="pending")  # "pending", "processing", "completed", "failed"
+    articles_found = Column(Integer, default=0)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    search_query = relationship("SearchQuery", back_populates="keyword_progress")

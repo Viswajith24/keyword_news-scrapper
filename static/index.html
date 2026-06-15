@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Keyword News Scraper</title>
+  <meta name="description" content="A powerful web scraping tool that discovers, crawls, and analyzes web pages for target keywords with advanced filtering, scheduling, and export capabilities.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📰</text></svg>">
   <!-- Google Fonts: Inter & Outfit -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -200,6 +202,14 @@
                 <small class="form-hint">Paste target URLs or sitemap links (one per line). XML sitemaps will be auto-parsed to extract all child URLs.</small>
               </div>
 
+              <div class="form-group d-none" id="form-group-disable-keyword-filter">
+                <label class="toggle-control">
+                  <input type="checkbox" id="chk-disable-keyword-filter">
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label" style="font-weight: 500;">Disable keyword filtering (Scrape all pages)</span>
+                </label>
+              </div>
+
               <div class="form-group d-none" id="form-group-direct-keywords">
                 <label for="direct-keywords-input" class="form-label">Keywords to Search</label>
                 <div class="input-with-icon">
@@ -263,9 +273,10 @@
                         <label for="select-crawl-engine" class="form-label">Crawl Engine</label>
                         <select id="select-crawl-engine" class="form-control">
                           <option value="fast">Fast HTTP (Requests + BeautifulSoup)</option>
+                          <option value="lightpanda">Lightpanda JS (Headless browser for machines)</option>
                           <option value="dynamic">Dynamic JS (Selenium Headless Chrome)</option>
                         </select>
-                        <small class="form-hint">Fast mode downloads HTML raw text. Dynamic mode boots headless Chrome (required for JS apps).</small>
+                        <small class="form-hint">Fast mode downloads HTML raw text. Lightpanda is a faster headless browser. Dynamic mode boots headless Chrome (heavy).</small>
                       </div>
 
                       <div class="form-group">
@@ -333,6 +344,9 @@
               <h3 id="progress-keyword-text">Analyzing: keyword</h3>
               <span class="badge" id="progress-status-badge">Processing</span>
             </div>
+            <div id="progress-actions-container" style="display: flex; gap: 0.50rem; align-items: center; margin-left: auto; margin-right: 1.50rem;">
+              <!-- Dynamic control buttons go here -->
+            </div>
             <span class="progress-percentage-text" id="progress-percent-label">0% Complete</span>
           </div>
           
@@ -370,7 +384,7 @@
               <i class="fa-solid fa-magnifying-glass"></i>
               <input type="text" id="results-search-input" placeholder="Filter by Domain/Title...">
             </div>
-            <select id="results-status-filter" class="form-control select-sm">
+            <select id="results-status-filter" class="form-control select-sm" style="max-width: 160px;">
               <option value="">All Statuses</option>
               <option value="matched">Matched Results</option>
               <option value="skipped">Skipped (No Match)</option>
@@ -528,6 +542,7 @@
                   <label for="sched-engine" class="form-label">Crawl Engine</label>
                   <select id="sched-engine" class="form-control">
                     <option value="fast">Fast HTTP Engine</option>
+                    <option value="lightpanda">Lightpanda JS Engine</option>
                     <option value="dynamic">Dynamic Headless Engine</option>
                   </select>
                 </div>
@@ -623,6 +638,6 @@
   </div>
 
   <!-- JavaScript application file -->
-  <script src="app.js?v=1.0.1"></script>
+  <script src="app.js?v=2.1.0"></script>
 </body>
 </html>

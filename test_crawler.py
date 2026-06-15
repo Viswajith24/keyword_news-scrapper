@@ -180,6 +180,25 @@ def run_tests():
     assert "MissingWord" not in matched_kws, "MissingWord should NOT be matched"
     print("   [SUCCESS] Multi-Keyword matching logic tests passed.")
 
+    # 7. Test Empty Keyword (Keyword-Free Scraping) Match Bypass
+    print("\n7. Testing Keyword-Free Scraping match bypass logic...")
+    analysis_empty = crawler.analyze_page(
+        html_content=mock_html,
+        url="https://codeacademy.org/tutorials/python",
+        keyword="",
+        match_type="phrase",
+        case_sensitive=False,
+        exact_match=False
+    )
+    print(f"   * Status matched: {analysis_empty['matched']}")
+    print(f"   * Occurrences: {analysis_empty['occurrences']}")
+    print(f"   * Relevance score: {analysis_empty['relevance_score']}")
+    print(f"   * Snippet extracted: '{analysis_empty['snippet']}'")
+    assert analysis_empty["matched"] is True, "Empty keyword should always match"
+    assert analysis_empty["occurrences"] == 0, "Empty keyword occurrences should be 0"
+    assert analysis_empty["relevance_score"] == 100.0, "Empty keyword relevance should default to 100"
+    print("   [SUCCESS] Keyword-Free Scraping match bypass tests passed.")
+
     # Clean up mock items
     db.delete(mock_url)
     db.delete(mock_query)

@@ -16,14 +16,14 @@ def get_export_data(search_id: int, db: Session) -> pd.DataFrame:
     if not query_record:
         raise ValueError(f"Search Query ID {search_id} not found.")
 
-    # Fetch matched records (or all crawled if there are no matched results, or just all matched)
-    # The requirement is: "Display a structured list of matching URLs."
-    # We will export only the rows that were crawled and marked "matched", or all crawled rows but with a "Matched" boolean column.
-    # Let's export all crawled URLs and include a "Keyword Found" column for complete diagnostic export, sorted by relevance score desc.
+    # Fetch matched records only
     records = db.query(CrawledURL).filter(
         CrawledURL.search_id == search_id,
-        CrawledURL.status != "pending"
+        CrawledURL.status == "matched"
     ).order_by(CrawledURL.relevance_score.desc()).all()
+
+    # Get the search query keyword as fallback
+    search_keyword = query_record.keyword or ""
 
     data_list = []
     for r in records:
@@ -37,35 +37,15 @@ def get_export_data(search_id: int, db: Session) -> pd.DataFrame:
                 pass
 
         data_list.append({
-            "URL": r.url,
-            "Domain": r.domain,
-            "Title": r.title or "N/A",
-            "Keyword Found": "Yes" if r.status == "matched" else "No",
-            "Matched Keywords": matched_kws,
-            "Occurrences": r.occurrences,
-            "Found in Title": "Yes" if r.found_in_title else "No",
-            "Found in Description": "Yes" if r.found_in_description else "No",
-            "Found in Body": "Yes" if r.found_in_body else "No",
-            "Found in URL": "Yes" if r.found_in_url else "No",
-            "Language": r.language or "Unknown",
-            "Snippet": r.snippet or "",
-            "Relevance Score": r.relevance_score,
-            "Description": r.description or "",
-            "Full Content": r.full_content or "",
-            "Author": r.author or "Unknown",
-            "Image URL": r.image_url or "",
-            "Duplicate Content": "Yes" if r.is_duplicate else "No",
-            "Error Details": r.error_message or "",
-            "Discovered Date": r.discovered_at.strftime("%Y-%m-%d %H:%M:%S") if r.discovered_at else "N/A"
+            "Website Name": r.domain,
+            "Keywords": matched_kws or search_keyword,
+            "Fully Scraped Content": r.full_content or ""
         })
 
     # Return empty dataframe if no records exist
     if not data_list:
         return pd.DataFrame(columns=[
-            "URL", "Domain", "Title", "Keyword Found", "Matched Keywords", "Occurrences", 
-            "Found in Title", "Found in Description", "Found in Body", 
-            "Found in URL", "Language", "Snippet", "Relevance Score", 
-            "Description", "Full Content", "Author", "Image URL", "Duplicate Content", "Error Details", "Discovered Date"
+            "Website Name", "Keywords", "Fully Scraped Content"
         ])
 
     return pd.DataFrame(data_list)

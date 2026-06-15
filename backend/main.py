@@ -23,13 +23,13 @@ from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 
 from backend.database import Base, engine, get_db, init_db, SessionLocal
-from backend.models import SearchQuery, CrawledURL, SearchSchedule
+from backend.models import SearchQuery, CrawledURL, SearchSchedule, KeywordProgress
 from backend.schemas import (
     SearchQueryCreate, SearchQueryResponse, 
     PaginatedCrawledURLResponse, CrawledURLResponse,
     SearchScheduleCreate, SearchScheduleResponse
 )
-from backend.queue_manager import start_queue_worker, stop_queue_worker
+from backend.queue_manager import start_queue_worker, stop_queue_worker, request_job_stop
 from backend.scheduler import start_scheduler, stop_scheduler
 from backend.exporter import export_results
 
@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="Keyword Scraper & Crawler API",
-    description="Asynchronously crawls and scrapers the web for target keywords.",
+    description="Asynchronously crawls and scrapes the web for target keywords.",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -148,14 +148,93 @@ def delete_search(request: Request, search_id: int, db: Session = Depends(get_db
     db.commit()
     return {"message": f"Search run {search_id} successfully deleted"}
 
+@app.post("/api/search/{search_id}/stop")
+@limiter.limit("10/minute")
+def stop_search(request: Request, search_id: int, db: Session = Depends(get_db), token: str = Depends(verify_token)):
+    """Gracefully aborts a search query run."""
+    query = db.query(SearchQuery).filter(SearchQuery.id == search_id).first()
+    if not query:
+        raise HTTPException(status_code=404, detail="Search query not found")
+        
+    if query.status in ("completed", "failed", "aborted"):
+        return {"message": f"Search run {search_id} is already in {query.status} state."}
+
+    request_job_stop(search_id)
+
+    # If the job is pending, we can directly set its status to aborted
+    if query.status == "pending":
+        query.status = "aborted"
+        query.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        
+    return {"message": f"Stop signal sent to search run {search_id}."}
+
+@app.post("/api/search/{search_id}/retry", response_model=SearchQueryResponse)
+@limiter.limit("10/minute")
+def retry_search(request: Request, search_id: int, db: Session = Depends(get_db), token: str = Depends(verify_token)):
+    """Duplicates a past search run config and creates a new pending run."""
+    old_query = db.query(SearchQuery).filter(SearchQuery.id == search_id).first()
+    if not old_query:
+        raise HTTPException(status_code=404, detail="Search query not found")
+        
+    new_query = SearchQuery(
+        keyword=old_query.keyword,
+        match_type=old_query.match_type,
+        case_sensitive=old_query.case_sensitive,
+        exact_match=old_query.exact_match,
+        domains_filter=old_query.domains_filter,
+        languages_filter=old_query.languages_filter,
+        date_range_start=old_query.date_range_start,
+        date_range_end=old_query.date_range_end,
+        engine=old_query.engine,
+        source_type=old_query.source_type,
+        direct_urls=old_query.direct_urls,
+        ignore_robots=old_query.ignore_robots,
+        status="pending"
+    )
+    db.add(new_query)
+    db.commit()
+    db.refresh(new_query)
+    return new_query
+
+def _serialize_crawled_url(url_obj) -> dict:
+    """Converts a CrawledURL SQLAlchemy model to a plain, fully serializable dict.
+    This guarantees the 'status' and all other fields are always present in the response.
+    """
+    return {
+        "id": url_obj.id,
+        "search_id": url_obj.search_id,
+        "url": url_obj.url,
+        "domain": url_obj.domain,
+        "title": url_obj.title or "",
+        "snippet": url_obj.snippet or "",
+        "occurrences": url_obj.occurrences or 0,
+        "found_in_title": bool(url_obj.found_in_title),
+        "found_in_description": bool(url_obj.found_in_description),
+        "found_in_body": bool(url_obj.found_in_body),
+        "found_in_url": bool(url_obj.found_in_url),
+        "language": url_obj.language,
+        "status": url_obj.status or "pending",
+        "error_message": url_obj.error_message,
+        "relevance_score": float(url_obj.relevance_score or 0.0),
+        "is_duplicate": bool(url_obj.is_duplicate),
+        "description": url_obj.description or "",
+        "full_content": url_obj.full_content or "",
+        "author": url_obj.author or "Unknown",
+        "image_url": url_obj.image_url,
+        "discovered_at": url_obj.discovered_at.isoformat() if url_obj.discovered_at else None,
+        "matched_keywords": url_obj.matched_keywords or "[]",
+    }
+
+
 @app.get("/api/results/{search_id}")
-@limiter.limit("30/minute")
+@limiter.limit("300/minute")
 def get_search_results(
     request: Request,
     search_id: int,
     page: int = Query(1, ge=1),
     limit: int = Query(100, ge=1),
-    status_filter: Optional[str] = Query(None, description="matched, skipped, failed"),
+
     domain_query: Optional[str] = Query(None),
     min_relevance: Optional[float] = Query(None),
     db: Session = Depends(get_db)
@@ -168,11 +247,11 @@ def get_search_results(
         raise HTTPException(status_code=404, detail="Search query not found")
 
     # Start building base query for CrawledURL
-    crawled_base_query = db.query(CrawledURL).filter(CrawledURL.search_id == search_id)
+    crawled_base_query = db.query(CrawledURL).filter(
+        CrawledURL.search_id == search_id
+    )
 
     # Apply filters
-    if status_filter:
-        crawled_base_query = crawled_base_query.filter(CrawledURL.status == status_filter)
     if domain_query:
         crawled_base_query = crawled_base_query.filter(CrawledURL.domain.contains(domain_query.lower()))
     if min_relevance is not None:
@@ -210,7 +289,7 @@ def get_search_results(
             "total": total_count,
             "page": page,
             "limit": limit,
-            "items": results
+            "items": [_serialize_crawled_url(r) for r in results]
         }
     }
 

@@ -1085,13 +1085,14 @@ body {
   letter-spacing: 0.2px;
 }
 
-.badge-pending { background-color: rgba(156, 163, 175, 0.1); color: var(--color-text-muted); border: 1px solid rgba(156, 163, 175, 0.2); }
-.badge-processing { background-color: rgba(59, 130, 246, 0.1); color: var(--accent-blue); border: 1px solid rgba(59, 130, 246, 0.2); }
-.badge-completed { background-color: rgba(16, 185, 129, 0.1); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.2); }
-.badge-failed { background-color: rgba(239, 68, 68, 0.1); color: var(--accent-red); border: 1px solid rgba(239, 68, 68, 0.2); }
-.badge-matched { background-color: rgba(16, 185, 129, 0.15); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.3); }
-.badge-skipped { background-color: rgba(156, 163, 175, 0.08); color: var(--color-text-muted); }
-.badge-duplicate { background-color: rgba(245, 158, 11, 0.1); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.2); }
+.badge-pending { background-color: rgba(156, 163, 175, 0.12); color: #c9cfd8; border: 1px solid rgba(156, 163, 175, 0.3); }
+.badge-processing { background-color: rgba(59, 130, 246, 0.12); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+.badge-completed { background-color: rgba(16, 185, 129, 0.12); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+.badge-failed { background-color: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+.badge-matched { background-color: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.35); }
+.badge-skipped { background-color: rgba(156, 163, 175, 0.12); color: #c9cfd8; border: 1px solid rgba(156, 163, 175, 0.3); }
+.badge-crawling { background-color: rgba(59, 130, 246, 0.1); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.25); }
+.badge-duplicate { background-color: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3); }
 
 /* Tag chips */
 .location-tags {
@@ -1337,8 +1338,167 @@ body {
   color: var(--accent-red);
 }
 
+.table-act-btn.abort-btn:hover {
+  color: var(--accent-red) !important;
+}
+
+.table-act-btn.retry-btn:hover {
+  color: var(--accent-cyan) !important;
+}
+
+.btn-abort:hover {
+  border-color: var(--accent-red) !important;
+  color: var(--accent-red) !important;
+  background-color: rgba(239, 68, 68, 0.05) !important;
+}
+
 .flex-row-gap {
   display: flex;
   gap: 0.4rem;
   align-items: center;
+}
+
+/* Missing utility classes */
+.flex-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.gap-3 {
+  gap: 1rem;
+}
+
+.color-cyan {
+  color: var(--accent-cyan) !important;
+}
+
+.color-red {
+  color: var(--accent-red) !important;
+}
+
+.color-text-muted {
+  color: var(--color-text-muted) !important;
+}
+
+.border-top {
+  border-top: 1px solid var(--border-glass);
+}
+
+/* Badge for aborted status */
+.badge-aborted {
+  background-color: rgba(245, 158, 11, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+/* Ensure results table status column is always visible */
+#results-data-table {
+  min-width: 900px;
+}
+
+/* Retry button styling */
+.btn-retry:hover {
+  border-color: var(--accent-cyan) !important;
+  color: var(--accent-cyan) !important;
+  background-color: rgba(0, 240, 255, 0.05) !important;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .main-content {
+    padding: 1.5rem 2rem;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-container {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    flex-direction: row;
+    padding: 1rem 1.5rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border-glass);
+    overflow-x: auto;
+  }
+
+  .sidebar-brand {
+    margin-bottom: 0;
+    margin-right: 2rem;
+    flex-shrink: 0;
+  }
+
+  .sidebar-menu {
+    flex-direction: row;
+    gap: 0.5rem;
+    flex-grow: 0;
+    flex-shrink: 0;
+  }
+
+  .menu-item {
+    padding: 0.5rem 0.85rem;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+
+  .menu-item span {
+    display: none;
+  }
+
+  .sidebar-footer {
+    display: none;
+  }
+
+  .main-content {
+    height: auto;
+    padding: 1.25rem 1rem;
+  }
+
+  .dashboard-split {
+    flex-direction: column;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .progress-stats-summary {
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .results-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .table-url-cell {
+    max-width: 250px;
+  }
+}
+
+@media (max-width: 600px) {
+  .metrics-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+  }
+
+  .metric-card {
+    padding: 1rem;
+  }
+
+  .page-title-area h1 {
+    font-size: 1.35rem;
+  }
+
+  .max-width-card {
+    max-width: 100%;
+  }
 }

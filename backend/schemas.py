@@ -15,7 +15,7 @@ class SearchQueryCreate(BaseModel):
     languages_filter: Optional[List[str]] = None  # ["en", "es", ...]
     date_range_start: Optional[datetime] = None
     date_range_end: Optional[datetime] = None
-    engine: Optional[str] = "fast"  # "fast" or "dynamic"
+    engine: Optional[str] = "fast"  # "fast", "dynamic", or "lightpanda"
     source_type: Optional[str] = "search"  # "search" or "direct"
     direct_urls: Optional[str] = None  # Multiline string of raw URLs
     ignore_robots: Optional[bool] = False
@@ -32,6 +32,7 @@ class SearchQueryResponse(BaseModel):
     date_range_end: Optional[datetime] = None
     engine: str
     source_type: str
+    direct_urls: Optional[str] = None
     ignore_robots: bool
     status: str
     total_urls_found: int
