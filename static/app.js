@@ -359,7 +359,11 @@ function initResultsToolbar() {
     opt.addEventListener('click', (e) => {
       const format = opt.getAttribute('data-format');
       if (appState.activeSearchId) {
-        downloadExportFile(appState.activeSearchId, format);
+        if (format === 'postgres') {
+          exportToPostgres(appState.activeSearchId);
+        } else {
+          downloadExportFile(appState.activeSearchId, format);
+        }
       } else {
         alert('No active results set to export.');
       }
@@ -781,6 +785,35 @@ async function downloadExportFile(searchId, format) {
   }
 }
 
+async function exportToPostgres(searchId) {
+  const exportBtn = document.getElementById('btn-export-dropdown');
+  const origHtml = exportBtn.innerHTML;
+  exportBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Connecting...';
+  exportBtn.disabled = true;
+
+  try {
+    const response = await fetch(`${API_BASE}/api/export/${searchId}/postgres`, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer changeme'
+      }
+    });
+    
+    if (!response.ok) {
+      const errMsg = await response.text();
+      throw new Error(errMsg || 'PostgreSQL database synchronization failed.');
+    }
+    
+    const result = await response.json();
+    alert(result.message || 'Successfully synchronized matching results to PostgreSQL!');
+  } catch (err) {
+    alert('Failed to export to PostgreSQL: ' + err.message);
+  } finally {
+    exportBtn.innerHTML = origHtml;
+    exportBtn.disabled = false;
+  }
+}
+
 async function deleteHistoryRun(searchId) {
   if (!confirm('Are you sure you want to permanently delete this search history run and all related URLs?')) return;
 
@@ -824,8 +857,6 @@ async function abortActiveSearch(searchId) {
 }
 
 async function retrySearch(searchId) {
-  if (!confirm('Are you sure you want to retry this keyword scan? This will launch a new run with the exact same settings.')) return;
-
   try {
     const response = await fetch(`${API_BASE}/api/search/${searchId}/retry`, {
       method: 'POST',
@@ -836,9 +867,8 @@ async function retrySearch(searchId) {
     if (!response.ok) throw new Error('Retry request failed');
 
     const newQuery = await response.json();
-    alert(`Crawl run successfully retried! New Run ID: ${newQuery.id}`);
     
-    // Switch live monitor to the new query ID
+    // Switch live monitor to the new query ID immediately for a premium, smooth transition
     startResultsMonitor(newQuery.id);
     loadHistoryList();
     loadDashboardData();
@@ -1105,6 +1135,38 @@ function openSnippetModal(urlId) {
   document.getElementById('modal-snippet-content').innerHTML = cleanSnippet;
   document.getElementById('modal-description').innerHTML = cleanDescription;
   document.getElementById('modal-full-content').innerHTML = cleanFullContent;
+  
+  // Render full images and videos list section
+  let mediaHtml = '';
+  let imgUrls = [];
+  let videoUrls = [];
+  
+  if (record.image_links) {
+    try { imgUrls = JSON.parse(record.image_links); } catch(e) {}
+  }
+  if (record.video_links) {
+    try { videoUrls = JSON.parse(record.video_links); } catch(e) {}
+  }
+  
+  if (imgUrls.length === 0 && videoUrls.length === 0) {
+    mediaHtml = '<span class="text-muted text-sm" style="font-style: italic;">No images/videos present</span>';
+  } else {
+    if (imgUrls.length > 0) {
+      mediaHtml += '<div style="margin-bottom: 0.75rem;"><label class="text-xs text-muted font-bold" style="display: block; margin-bottom: 0.25rem;">Images (' + imgUrls.length + ')</label><div style="display: flex; gap: 0.5rem; flex-wrap: wrap; max-height: 100px; overflow-y: auto; padding: 0.25rem 0;">';
+      imgUrls.forEach(url => {
+        mediaHtml += `<a href="${url}" target="_blank" style="display: block; width: 60px; height: 45px; border-radius: 4px; border: 1px solid var(--border-glass); overflow: hidden; background: rgba(0,0,0,0.35);" title="View image: ${url}"><img src="${url}" style="width: 100%; height: 100%; object-fit: cover; opacity: 0.85; transition: opacity 0.2s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.85"></a>`;
+      });
+      mediaHtml += '</div></div>';
+    }
+    if (videoUrls.length > 0) {
+      mediaHtml += '<div><label class="text-xs text-muted font-bold" style="display: block; margin-bottom: 0.25rem;">Videos (' + videoUrls.length + ')</label><div style="display: flex; flex-direction: column; gap: 0.25rem;">';
+      videoUrls.forEach(url => {
+        mediaHtml += `<a href="${url}" target="_blank" style="font-size: 0.75rem; color: var(--accent-cyan); text-decoration: none; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; display: block; padding: 0.25rem 0.5rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border-glass); border-radius: 4px;" title="Watch video"><i class="fa-solid fa-circle-play"></i> Watch Video: ${url}</a>`;
+      });
+      mediaHtml += '</div></div>';
+    }
+  }
+  document.getElementById('modal-media-content').innerHTML = mediaHtml;
   
   // Set visit link
   const visitBtn = document.getElementById('modal-btn-visit');

@@ -1,38 +1,63 @@
-# ## Changes
-# - Added content_hash column migration to CrawledURL table inspection.
-# - Ensured ignore_robots column migration on SearchQuery table inspection.
-
 import os
-from sqlalchemy import create_engine, event
+import urllib.parse
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-# Ensure the database directory exists (using local DB in workspace)
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "keyword_scraper.db"))
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+# Load environment variables from .env file
+load_dotenv()
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False, "timeout": 30}
+# Read target PostgreSQL database URL configuration
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/keyword_scraper"
 )
 
-# Enable WAL (Write-Ahead Logging) mode and synchronous=NORMAL on SQLite connections
-# for high concurrency performance and prevention of database locks.
-@event.listens_for(engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL;")
-    cursor.execute("PRAGMA synchronous=NORMAL;")
-    cursor.execute("PRAGMA busy_timeout=30000;")  # 30 seconds timeout
-    cursor.close()
+# Connect with a robust pool size and timeout configurations suitable for web apps
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=1800
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def init_db():
+    """
+    Checks if the target database exists on the PostgreSQL server.
+    If not, connects to the administrative 'postgres' database and creates it.
+    Then executes SQLAlchemy metadata generation and column migrations.
+    """
+    try:
+        parsed = urllib.parse.urlparse(DATABASE_URL)
+        db_name = parsed.path.lstrip('/')
+        
+        if db_name:
+            # Connect to admin database to verify target database existence
+            postgres_default_url = urllib.parse.urlunparse(
+                parsed._replace(path='/postgres')
+            )
+            admin_engine = create_engine(postgres_default_url, isolation_level="AUTOCOMMIT")
+            try:
+                with admin_engine.connect() as admin_conn:
+                    res = admin_conn.execute(text(f"SELECT 1 FROM pg_database WHERE datname='{db_name}'")).fetchone()
+                    if not res:
+                        admin_conn.execute(text(f"CREATE DATABASE {db_name}"))
+                        print(f"[PostgreSQL] Successfully created database '{db_name}'.")
+            except Exception as admin_err:
+                print(f"[PostgreSQL Warning] Fallback database check failed: {admin_err}")
+            finally:
+                admin_engine.dispose()
+    except Exception as e:
+        print(f"[PostgreSQL Warning] Database precheck error: {e}")
+
+    # Create tables
     Base.metadata.create_all(bind=engine)
     
-    # Check table structures and execute simple SQLite migrations if needed
-    from sqlalchemy import inspect, text
+    # Run dynamic schema migrations using the inspector
+    from sqlalchemy import inspect
     inspector = inspect(engine)
     
     if 'crawled_urls' in inspector.get_table_names():
@@ -61,12 +86,20 @@ def init_db():
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE crawled_urls ADD COLUMN image_url TEXT NULL;"))
             print("Database migration: added image_url column to crawled_urls.")
+        if 'image_links' not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE crawled_urls ADD COLUMN image_links TEXT NULL;"))
+            print("Database migration: added image_links column to crawled_urls.")
+        if 'video_links' not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE crawled_urls ADD COLUMN video_links TEXT NULL;"))
+            print("Database migration: added video_links column to crawled_urls.")
             
     if 'search_queries' in inspector.get_table_names():
         columns = [col['name'] for col in inspector.get_columns('search_queries')]
         if 'ignore_robots' not in columns:
             with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE search_queries ADD COLUMN ignore_robots BOOLEAN DEFAULT 0;"))
+                conn.execute(text("ALTER TABLE search_queries ADD COLUMN ignore_robots BOOLEAN DEFAULT FALSE;"))
             print("Database migration: added ignore_robots column to search_queries.")
 
 def get_db():

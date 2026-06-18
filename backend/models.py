@@ -61,6 +61,8 @@ class CrawledURL(Base):
     full_content = Column(Text, nullable=True)
     author = Column(String, nullable=True)
     image_url = Column(Text, nullable=True)
+    image_links = Column(Text, nullable=True)
+    video_links = Column(Text, nullable=True)
     discovered_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     matched_keywords = Column(Text, nullable=True)
 

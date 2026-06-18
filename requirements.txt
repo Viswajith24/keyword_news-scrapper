@@ -16,3 +16,4 @@ langdetect
 
 # Optional: Lightpanda headless browser engine (faster than Selenium)
 playwright
+psycopg2-binary>=2.9.0

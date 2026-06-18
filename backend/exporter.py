@@ -3,10 +3,13 @@
 
 import io
 import json
+import hashlib
+from datetime import datetime, timezone
 from typing import Tuple
 import pandas as pd
 from sqlalchemy.orm import Session
 from backend.models import CrawledURL, SearchQuery
+from backend.postgres_integration import classify_article
 
 def get_export_data(search_id: int, db: Session) -> pd.DataFrame:
     """
@@ -36,16 +39,41 @@ def get_export_data(search_id: int, db: Session) -> pd.DataFrame:
             except Exception:
                 pass
 
+        # Generate stable record_id using md5 of URL
+        record_id = hashlib.md5(r.url.encode("utf-8")).hexdigest()
+
+        # Classify page heuristically
+        classification = classify_article(r.url, r.title, r.full_content or "", r.language or "en")
+
         data_list.append({
-            "Website Name": r.domain,
-            "Keywords": matched_kws or search_keyword,
-            "Fully Scraped Content": r.full_content or ""
+            "record_id": record_id,
+            "source_name": r.domain or "Unknown",
+            "source_type": classification["source_type"],
+            "title": r.title or "Untitled",
+            "url": r.url,
+            "publication_date": r.discovered_at.isoformat() if r.discovered_at else "",
+            "author": r.author or "Unknown",
+            "content_type": classification["content_type"],
+            "subject_theme": classification["subject_theme"],
+            "country_region": classification["country_region"],
+            "language": classification["language"],
+            "keywords": matched_kws or search_keyword,
+            "full_text": r.full_content or "",
+            "tags": search_keyword,
+            "pdf_link": r.url if (r.url and r.url.lower().endswith(".pdf")) else "",
+            "image_links": r.image_links or "",
+            "video_links": r.video_links or "",
+            "organization": r.domain or "Unknown",
+            "scraped_date": datetime.now(timezone.utc).isoformat()
         })
 
     # Return empty dataframe if no records exist
     if not data_list:
         return pd.DataFrame(columns=[
-            "Website Name", "Keywords", "Fully Scraped Content"
+            "record_id", "source_name", "source_type", "title", "url", "publication_date",
+            "author", "content_type", "subject_theme", "country_region", "language",
+            "keywords", "full_text", "tags", "pdf_link", "image_links", "video_links",
+            "organization", "scraped_date"
         ])
 
     return pd.DataFrame(data_list)

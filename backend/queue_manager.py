@@ -13,7 +13,7 @@ import threading
 import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Set, Tuple, Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import xml.etree.ElementTree as ET
 from sqlalchemy.orm import Session
 from sqlalchemy import update
@@ -23,6 +23,7 @@ from backend.database import SessionLocal
 from backend.models import SearchQuery, CrawledURL, KeywordProgress
 from backend.search_engine import search_web
 from backend.crawler import Crawler
+from bs4 import BeautifulSoup
 
 # Thread-safe tracker for domain crawl times to enforce rate limits
 # Format: {domain: last_request_time_float}
@@ -159,11 +160,22 @@ def crawl_url_task(
             break
         except Exception as e:
             result["error_message"] = str(e)
-            if attempt < max_retries - 1:
+            
+            # Check if it is a non-retryable HTTP status code
+            is_retryable = True
+            # Check if exception has response attribute (indicating an HTTPError)
+            response = getattr(e, "response", None)
+            if response is not None:
+                status_code = getattr(response, "status_code", None)
+                if status_code in (404, 410, 401, 403):
+                    is_retryable = False
+            
+            if is_retryable and attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Double delay (4s, 8s)
             else:
                 result["status"] = "failed"
+                break
                 
     crawler.close()
     
@@ -315,7 +327,66 @@ def process_search_query(search_id: int):
             # Step 1: Gather candidate URLs
             candidate_urls = []
             if query.source_type == "direct":
-                candidate_urls = fetch_direct_urls(query.direct_urls, db)
+                raw_direct_urls = fetch_direct_urls(query.direct_urls, db)
+                candidate_urls = []
+                crawler = Crawler()
+                searched_domains = set()
+                for d_url in raw_direct_urls:
+                    candidate_urls.append(d_url)
+                    try:
+                        print(f"[INFO] Pre-scanning direct URL for same-domain link expansion: {d_url}")
+                        html_text = crawler.fetch_page(d_url, engine="fast", ignore_robots=query.ignore_robots)
+                        soup = BeautifulSoup(html_text, "html.parser")
+                        parsed_origin = urlparse(d_url)
+                        origin_domain = parsed_origin.netloc.lower()
+                        if origin_domain.startswith("www."):
+                            origin_domain = origin_domain[4:]
+                        if origin_domain:
+                            searched_domains.add(origin_domain)
+                            
+                        count = 0
+                        for a in soup.find_all("a"):
+                            if count >= 100:
+                                break
+                            href = a.get("href")
+                            if href:
+                                abs_url = urljoin(d_url, href.strip())
+                                parsed_abs = urlparse(abs_url)
+                                if parsed_abs.scheme in ("http", "https"):
+                                    abs_domain = parsed_abs.netloc.lower()
+                                    if abs_domain.startswith("www."):
+                                        abs_domain = abs_domain[4:]
+                                    if abs_domain == origin_domain:
+                                        path = parsed_abs.path.lower()
+                                        if not any(path.endswith(ext) for ext in [".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".zip", ".css", ".js", ".xml"]):
+                                            candidate_urls.append(abs_url)
+                                            count += 1
+                    except Exception as ex:
+                        print(f"[WARNING] Failed to expand links for {d_url}: {ex}")
+                        try:
+                            parsed_origin = urlparse(d_url)
+                            origin_domain = parsed_origin.netloc.lower()
+                            if origin_domain.startswith("www."):
+                                origin_domain = origin_domain[4:]
+                            if origin_domain:
+                                searched_domains.add(origin_domain)
+                        except Exception:
+                            pass
+                crawler.close()
+                
+                # Perform site-restricted search engine query for each unique domain with the current keyword
+                if kw.strip():
+                    for domain in searched_domains:
+                        try:
+                            site_query = f"{kw} site:{domain}"
+                            print(f"[INFO] Performing site-restricted search query for direct URL domain: '{site_query}'")
+                            search_results = search_web(site_query, max_results=50)
+                            print(f"[INFO] Site-restricted search for '{domain}' returned {len(search_results)} URLs.")
+                            candidate_urls.extend(search_results)
+                        except Exception as search_ex:
+                            print(f"[WARNING] Site-restricted search failed for domain '{domain}': {search_ex}")
+                            
+                candidate_urls = list(dict.fromkeys(candidate_urls))
             else:
                 search_query = kw
                 if domains_include:
@@ -479,6 +550,14 @@ def process_search_query(search_id: int):
             query.status = "completed"
             query.updated_at = datetime.now(timezone.utc)
             db.commit()
+            
+            # Automatically synchronize matched records to PostgreSQL
+            try:
+                from backend.postgres_integration import export_search_to_postgres
+                export_search_to_postgres(search_id, db)
+                print(f"[PostgreSQL Auto-Sync] Successfully synchronized search {search_id} results.")
+            except Exception as pg_err:
+                print(f"[PostgreSQL Auto-Sync Warning] Failed to auto-sync results for search {search_id}: {pg_err}")
             
     except Exception as e:
         query.status = "failed"

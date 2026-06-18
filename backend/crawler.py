@@ -19,6 +19,26 @@ from typing import Dict, Any, Tuple, Optional, List, Set
 import requests
 from bs4 import BeautifulSoup
 
+# Regex patterns that indicate related articles, comments, or other sections that come after the main article
+STOP_PATTERNS = [
+    re.compile(r'^more\s+(?:.*\s+)?(?:news|articles|stories|headlines)$', re.IGNORECASE),
+    re.compile(r'^related\s+(?:.*\s+)?(?:stories|articles|posts|news|content)$', re.IGNORECASE),
+    re.compile(r'^you\s+may\s+also\s+like$', re.IGNORECASE),
+    re.compile(r'^recommended\s+for\s+you$', re.IGNORECASE),
+    re.compile(r'^read\s+next$', re.IGNORECASE),
+    re.compile(r'^sponsored\s+(?:.*\s+)?content$', re.IGNORECASE),
+    re.compile(r'^latest\s+(?:.*\s+)?(?:stories|news|headlines|articles)$', re.IGNORECASE),
+    re.compile(r'^popular\s+(?:.*\s+)?(?:stories|articles|posts)$', re.IGNORECASE),
+    re.compile(r'^top\s+stories$', re.IGNORECASE),
+    re.compile(r'^trending\s+(?:.*\s+)?(?:stories|news|topics)$', re.IGNORECASE),
+    re.compile(r'^comments$', re.IGNORECASE),
+    re.compile(r'^discussion$', re.IGNORECASE),
+    re.compile(r'^share\s+this\s+article$', re.IGNORECASE),
+    re.compile(r'^follow\s+us$', re.IGNORECASE),
+    re.compile(r'^newsletter$', re.IGNORECASE),
+    re.compile(r'^more\s+from\s+', re.IGNORECASE),
+]
+
 # Try importing Selenium modules; handles cases where it is not installed
 try:
     from selenium import webdriver
@@ -275,7 +295,23 @@ class Crawler:
         else:
             try:
                 return self._fetch_http(url)
+            except requests.exceptions.HTTPError as http_err:
+                status_code = http_err.response.status_code if http_err.response is not None else None
+                # Only fall back to Selenium for 403 (e.g. Cloudflare / WAF block)
+                if status_code == 403 and SELENIUM_AVAILABLE:
+                    print(f"HTTP fetch returned 403 for {url}. Falling back to Selenium headless Chrome.")
+                    try:
+                        driver = self._get_selenium_driver()
+                        driver.get(url)
+                        driver.implicitly_wait(5)
+                        return driver.page_source
+                    except Exception as selenium_error:
+                        print(f"Selenium fallback also failed: {selenium_error}")
+                        raise http_err
+                else:
+                    raise http_err
             except Exception as e:
+                # For connection timeouts, DNS failures, etc., fall back to Selenium if available
                 if SELENIUM_AVAILABLE:
                     print(f"HTTP fetch failed for {url} ({e}). Falling back to Selenium headless Chrome.")
                     try:
@@ -318,12 +354,39 @@ class Crawler:
         for tag in target_soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
             tag.decompose()
             
+        def apply_stop_patterns(t_soup):
+            stop_tag = None
+            for tag in t_soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "section"]):
+                txt = tag.get_text().strip()
+                if txt:
+                    tag_name = tag.name.lower()
+                    is_heading = tag_name in ["h1", "h2", "h3", "h4", "h5", "h6"]
+                    if is_heading or len(txt) < 80:
+                        is_stop = False
+                        for pattern in STOP_PATTERNS:
+                            if pattern.match(txt):
+                                is_stop = True
+                                break
+                        if is_stop:
+                            stop_tag = tag
+                            break
+            if stop_tag:
+                to_decompose = list(stop_tag.next_elements)
+                stop_tag.decompose()
+                for el in to_decompose:
+                    try:
+                        el.decompose()
+                    except Exception:
+                        pass
+
+        apply_stop_patterns(target_soup)
         text = target_soup.get_text(separator=" ")
         # Fallback to cleaning the full soup if article heuristic yielded extremely short text
         if main_content and len(text.strip()) < 200:
             target_soup = BeautifulSoup(str(soup), "html.parser")
             for tag in target_soup(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
                 tag.decompose()
+            apply_stop_patterns(target_soup)
             text = target_soup.get_text(separator=" ")
             
         return text
@@ -389,7 +452,7 @@ class Crawler:
             if element:
                 text = element.get_text().strip()
                 # Clean prefix words like "By " or "Posted by "
-                text_cleaned = re.sub(r'^(?i)by\s+|posted\s+by\s+', '', text)
+                text_cleaned = re.sub(r'(?i)^(?:by|posted\s+by)\s+', '', text)
                 if 0 < len(text_cleaned) < 100:
                     return text_cleaned
                     
@@ -582,12 +645,17 @@ class Crawler:
                     desc_content = " ".join(desc_content)
                 description = str(desc_content).strip()
         
+        from backend.firecrawl_converter import convert_html_to_firecrawl_schema
+        normalized_data = convert_html_to_firecrawl_schema(html_content, url)
+        markdown_content = normalized_data["data"]["markdown"]
+        
         body_text = self.clean_html_content(soup)
         language = self.detect_language(soup, body_text)
         pub_date = self.detect_date(soup)
         content_hash = self.calculate_content_hash(body_text)
         author = self.extract_author(soup)
         image_url = self.extract_image_url(soup, url)
+
         
         # 2. Extract domain and check URL keyword presence
         parsed_url = urllib.parse.urlparse(url)
@@ -725,6 +793,13 @@ class Crawler:
                     
                 relevance_score = round(relevance_score, 1)
 
+        # 6. Extract full images and videos list
+        images_list = normalized_data.get("data", {}).get("images", [])
+        videos_list = normalized_data.get("data", {}).get("videos", [])
+        
+        image_links_json = json.dumps([img["src"] for img in images_list if img.get("src")])
+        video_links_json = json.dumps([v["src"] for v in videos_list if v.get("src")])
+
         return {
             "title": title[:200] if title else "Untitled",
             "snippet": snippet,
@@ -738,9 +813,12 @@ class Crawler:
             "domain": domain,
             "content_hash": content_hash,
             "description": description,
-            "full_content": body_text,
+            "full_content": markdown_content,
             "author": author[:100] if author else "Unknown",
+
             "image_url": image_url,
+            "image_links": image_links_json,
+            "video_links": video_links_json,
             "relevance_score": relevance_score,
             "matched": matched,
             "matched_keywords": json.dumps(matched_keywords_found)

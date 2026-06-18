@@ -1,6 +1,6 @@
 # 📰 Keyword News Scraper & Content Analyzer
 
-A premium, modern, glassmorphism-styled web application built with **FastAPI**, **SQLAlchemy (SQLite)**, and **Vanilla JS/CSS** that dynamically crawls websites for target keyword matches. It supports high-speed HTTP retrieval, Selenium headless browser crawling, article text expansion, multi-page pagination searching, and robust file exports (Excel, CSV, JSON, Parquet).
+A premium, modern, glassmorphism-styled web application built with **FastAPI**, **SQLAlchemy (SQLite / PostgreSQL)**, and **Vanilla JS/CSS** that dynamically crawls websites for target keyword matches. It supports high-speed HTTP retrieval, Selenium headless browser crawling, article text expansion, multi-page pagination searching, and robust file exports (Excel, CSV, JSON, Parquet).
 
 ---
 
@@ -15,6 +15,14 @@ A premium, modern, glassmorphism-styled web application built with **FastAPI**, 
   - **Multi-Keyword Lists**: Search for multiple comma- or newline-separated keywords. Matches are flagged in the UI as beautiful tags.
   - **Keyword-Free Archiving**: Toggle keyword filtering off to archive full pages directly.
 - **📑 Multi-Page pagination**: Standalone CLI scraper searches sequentially through consecutive next-page links if keywords aren't found on the landing page.
+- **🗃️ PostgreSQL Sync & Heuristics Classification**:
+  - Automatically synchronizes matched scraping records to a PostgreSQL target database in the background after finishing, or manually via the "Export to PostgreSQL DB" button in the dashboard UI.
+  - Features custom heuristics to classify article records automatically by **source type** (News, Journal, Think Tank, Government, Research Institute), **content type** (Article, Report, Policy Brief, Journal, Event, Book, Podcast, Video), **subject theme** (Maritime, Defence, Security, Politics, Economy, General), **country/region coverage** (with custom regex patterns), and **language**.
+- **🔥 Firecrawl-Compatible Extraction Normalizer**:
+  - An isolated extraction normalization layer that converts raw HTML documents into clean Markdown and structured JSON elements matching the Firecrawl response specifications.
+  - Extracts page titles, descriptions, headings, paragraphs, lists, tables, nested code blocks, quotes, and lists of resolved links, image URLs (with dimension/alt metadata), and videos (HTML5 or embedded YouTube/Vimeo/Loom/etc.).
+  - Features a self-healing content retention validation block that falls back to minimal cleaning if content is aggressively stripped.
+  - Exposes `/api/scrape` for on-demand live scraping and `/api/results/crawled/{url_id}/firecrawl` for retrieving database records in Firecrawl schema.
 - **📊 Interactive Dashboard**:
   - Live processing progress indicators and real-time log monitors.
   - Highlighting matching terms inside page titles, metadata descriptions, URLs, and article body snippets.
@@ -26,8 +34,8 @@ A premium, modern, glassmorphism-styled web application built with **FastAPI**, 
 
 ## 🛠️ Tech Stack
 
-- **Backend**: Python 3.9+, FastAPI, SQLAlchemy ORM, Uvicorn, Slowapi, Beautiful Soup 4, Requests, Selenium.
-- **Database**: SQLite (Write-Ahead Logging (WAL) enabled for high concurrency).
+- **Backend**: Python 3.9+, FastAPI, SQLAlchemy ORM, Uvicorn, Slowapi, Beautiful Soup 4, Requests, Selenium, Psycopg2.
+- **Database**: SQLite (local workspace queue and config), PostgreSQL (scraped article production synchronization).
 - **Frontend**: Vanilla HTML5, CSS3 (Glassmorphism design system, CSS Grid/Flexbox, Custom variables), Vanilla ES6 JavaScript.
 
 ---
@@ -36,22 +44,24 @@ A premium, modern, glassmorphism-styled web application built with **FastAPI**, 
 
 ```
 ├── backend/
-│   ├── main.py          # FastAPI server app, lifespans, API routes, and rate limits
-│   ├── database.py      # SQLite engine session config and startup schemas migration
-│   ├── models.py        # SQLAlchemy models (SearchQuery, CrawledURL, etc.)
-│   ├── schemas.py       # Pydantic serialization definitions
-│   ├── queue_manager.py # Threaded worker loops, domain-rate limits, and scrape tasks
-│   ├── crawler.py       # Page fetching, BS4 cleaning, language/date detection, and parser
-│   ├── exporter.py      # Spreadsheet stream output generator (Excel/CSV/JSON/Parquet)
-│   └── scheduler.py     # Recurring cron scheduler loops for active automations
+│   ├── main.py                 # FastAPI server app, lifespans, API routes, and rate limits
+│   ├── database.py             # SQLite/PostgreSQL engine session config and database startup checks
+│   ├── models.py               # SQLAlchemy models (SearchQuery, CrawledURL, etc.)
+│   ├── schemas.py              # Pydantic serialization definitions
+│   ├── queue_manager.py        # Threaded worker loops, domain-rate limits, and scrape tasks
+│   ├── crawler.py              # Page fetching, BS4 cleaning, language/date detection, and parser
+│   ├── exporter.py             # Spreadsheet stream output generator (Excel/CSV/JSON/Parquet)
+│   ├── scheduler.py            # Recurring cron scheduler loops for active automations
+│   ├── firecrawl_converter.py  # Firecrawl content parser, DOM scoring, and Markdown extraction layer
+│   └── postgres_integration.py # PostgreSQL scraped_articles sync engine and heuristic classifier
 ├── static/
-│   ├── index.html       # Single Page Application HTML markup
-│   ├── app.js           # AJAX request controllers, polling state, and table renderers
-│   └── styles.css       # Premium Dark-mode Glassmorphic neon-glow styling
-├── requirements.txt     # Python package requirements checklist
-├── run.bat              # Automated Windows setup & launcher script
-├── test_crawler.py      # Comprehensive local diagnostic unit tests
-└── selenium_scraper.py  # Standalone CLI dynamic sequential pagination scraper
+│   ├── index.html              # Single Page Application HTML markup with Glassmorphic dashboard
+│   ├── app.js                  # AJAX request controllers, polling state, and table renderers
+│   └── styles.css              # Premium Dark-mode Glassmorphic neon-glow styling
+├── requirements.txt            # Python package requirements checklist (includes psycopg2-binary)
+├── run.bat                     # Automated Windows setup & launcher script
+├── test_crawler.py             # Comprehensive diagnostic suite for database, search, and normalizer logic
+└── selenium_scraper.py         # Standalone CLI dynamic sequential pagination scraper with PostgreSQL classifier
 ```
 
 ---
@@ -90,7 +100,7 @@ Double-click the **`run.bat`** file in the root workspace. This script will auto
 
 ## 🧪 Running Diagnostic Tests
 
-Execute the automated test suite to verify database migrations, page parsers, boolean queries, multi-keyword extraction, and exporter modules:
+Execute the automated test suite to verify database migrations, page parsers, boolean queries, multi-keyword extraction, exporter modules, classification heuristics, and the Firecrawl normalization layer:
 
 ```bash
 python test_crawler.py
@@ -111,11 +121,14 @@ For standalone command-line operations (which check sequential next-page paginat
    ```bash
    python selenium_scraper.py
    ```
-3. The script will output a structured JSON containing the extracted text content, lead images, and video resource links from matching landing/paginated pages.
+3. The script will output a structured JSON containing the extracted text content, lead images, and video resource links from matching landing/paginated pages, conforming to the 19-field classification schema.
 
 ---
 
-## 🔒 Rate Limiting & Performance Configurations
+## 🔒 Rate Limiting & Configurations
 
 - **Rate Limiting**: To prevent API abuse, endpoints are rate-limited via `slowapi`. The `/api/results/{search_id}` endpoint is set to a maximum of **300 requests/minute** to accommodate real-time front-end polling.
-- **SQLite Optimization**: The app runs SQLite in **WAL (Write-Ahead Logging)** mode with a synchronous setting of `NORMAL` and a busy timeout of `30 seconds`. This enables concurrent database reads/writes without table-locking issues.
+- **Database Configuration**: The application leverages SQLite for storing search configurations, schedules, and local crawled URLs.
+- **PostgreSQL Configuration**: The production synchronizer connects to PostgreSQL using the connection string configured via the `DATABASE_URL` or `POSTGRES_URL` environment variable. By default, it falls back to:
+  `postgresql://postgres:postgres@localhost:5432/keyword_scraper`
+  On backend server startup, the system will automatically check if the target database exists on the database server and auto-create it if missing.

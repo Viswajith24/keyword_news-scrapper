@@ -407,6 +407,7 @@
                 <button class="export-opt" data-format="xlsx"><i class="fa-solid fa-file-excel color-excel"></i> Excel Worksheet (.xlsx)</button>
                 <button class="export-opt" data-format="json"><i class="fa-solid fa-file-code color-json"></i> JSON Structure</button>
                 <button class="export-opt" data-format="parquet"><i class="fa-solid fa-cubes color-parquet"></i> Parquet Archive</button>
+                <button class="export-opt" data-format="postgres"><i class="fa-solid fa-database color-amber"></i> Export to PostgreSQL DB</button>
               </div>
             </div>
           </div>
@@ -627,6 +628,12 @@
           <label class="text-xs text-muted">Full Scraped Content</label>
           <div class="snippet-content-box" id="modal-full-content" style="max-height: 200px;">
             Full clean body content will go here...
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="text-xs text-muted">Images & Videos Present</label>
+          <div class="snippet-content-box" id="modal-media-content" style="max-height: 150px; overflow-y: auto; padding: 0.5rem 0.85rem;">
+            No images/videos present
           </div>
         </div>
       </div>

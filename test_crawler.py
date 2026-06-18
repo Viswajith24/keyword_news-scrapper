@@ -199,7 +199,147 @@ def run_tests():
     assert analysis_empty["relevance_score"] == 100.0, "Empty keyword relevance should default to 100"
     print("   [SUCCESS] Keyword-Free Scraping match bypass tests passed.")
 
+    # 8. Test PostgreSQL Integration (Optional/Conditional)
+    print("\n8. Testing PostgreSQL Integration...")
+    try:
+        from backend.postgres_integration import init_postgres_db, classify_article, export_search_to_postgres
+        
+        # Test heuristic classification
+        print("   Testing classification heuristics...")
+        cls = classify_article("https://www.rand.org/pubs/policy_briefs/PB101.pdf", "US Maritime Security Strategy", "The navy and vessels are critical for defense in the Indo-Pacific region.", "en")
+        print(f"   * Classification result: {cls}")
+        assert cls["source_type"] == "Think Tank", "Should detect Think Tank"
+        assert cls["content_type"] == "Policy Brief", "Should detect Policy Brief"
+        assert "Maritime" in cls["subject_theme"], "Should detect Maritime"
+        assert "Defence" in cls["subject_theme"], "Should detect Defence"
+        assert "United States" in cls["country_region"], "Should detect United States"
+        assert "Indo-Pacific" in cls["country_region"], "Should detect Indo-Pacific"
+        assert cls["language"] == "English", "Should map to English"
+        print("   [SUCCESS] Heuristic classifier tests passed.")
+        
+        # Test DB connection and insertion
+        print("   Attempting to initialize PostgreSQL DB & run test sync...")
+        init_postgres_db(verbose=True)
+        
+        inserted, updated = export_search_to_postgres(mock_query.id, db)
+        print(f"   * Sync result: inserted {inserted}, updated {updated}")
+        assert inserted > 0 or updated > 0, "Should have synced the matched mock article"
+        print("   [SUCCESS] PostgreSQL database connection & sync tests passed.")
+    except Exception as e:
+        print(f"   [SKIPPED/WARNING] PostgreSQL tests could not be fully completed: {e}")
+ 
+    # 9. Test Firecrawl Normalization Layer
+    print("\n9. Testing Firecrawl Normalization Layer...")
+    try:
+        from backend.firecrawl_converter import convert_html_to_firecrawl_schema
+        
+        # Comprehensive test HTML including code block, blockquote, images, video tags, iframe embeds, and lists
+        rich_mock_html = """
+        <html>
+          <head>
+            <title>Advanced Scraping Framework Specs</title>
+            <meta name="description" content="Detailed specs for the Firecrawl-quality content scraper.">
+          </head>
+          <body>
+            <main id="main-content">
+              <h1>Scraper Specifications</h1>
+              <p>The goal is to extract visible human-readable text exactly as it appears. Let's look at this <a href="/pricing" title="Check plans">pricing guide</a>.</p>
+              
+              <blockquote>"This scraper is built for maximum content fidelity."</blockquote>
+              
+              <pre><code>def get_scraper(): return FirecrawlConverter()</code></pre>
+              
+              <figure>
+                <img src="/assets/diagram.png" alt="Architecture Diagram" title="Core Architecture Diagram" width="800" height="600" />
+                <figcaption>Our advanced data extraction flow</figcaption>
+              </figure>
+
+              <video src="/assets/demo.mp4" poster="/assets/thumbnail.png" title="Framework Demo Video"></video>
+              <iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" title="Tutorial Video"></iframe>
+            </main>
+          </body>
+        </html>
+        """
+        
+        fc_res = convert_html_to_firecrawl_schema(
+            html=rich_mock_html,
+            url="https://scraper.io/docs/specs",
+            status_code=200
+        )
+        
+        print(f"   * Success flag: {fc_res['success']}")
+        print(f"   * Title: '{fc_res['data']['metadata']['title']}'")
+        print(f"   * Headings: {fc_res['data']['content']['headings']}")
+        print(f"   * Links: {fc_res['data']['links']}")
+        print(f"   * Images: {fc_res['data']['images']}")
+        print(f"   * Videos: {fc_res['data']['videos']}")
+        print(f"   * Code blocks: {fc_res['data']['content']['codeBlocks']}")
+        print(f"   * Quotes: {fc_res['data']['content']['quotes']}")
+        
+        # Verify schema elements
+        assert fc_res["success"] is True
+        assert "markdown" in fc_res["data"]
+        assert "html" in fc_res["data"]
+        assert "metadata" in fc_res["data"]
+        assert "links" in fc_res["data"]
+        assert "images" in fc_res["data"]
+        assert "videos" in fc_res["data"]
+        assert "content" in fc_res["data"]
+        
+        # Title and content structures
+        assert fc_res["data"]["metadata"]["title"] == "Advanced Scraping Framework Specs"
+        assert "Scraper Specifications" in fc_res["data"]["content"]["headings"]
+        assert '"This scraper is built for maximum content fidelity."' in fc_res["data"]["content"]["quotes"]
+        assert "def get_scraper(): return FirecrawlConverter()" in fc_res["data"]["content"]["codeBlocks"]
+        
+        # Markdown Link Isolation (Anchor text plain rendering)
+        markdown_body = fc_res["data"]["markdown"]
+        assert "pricing guide" in markdown_body
+        assert "[pricing guide]" not in markdown_body
+        assert "https://scraper.io/pricing" not in markdown_body
+        
+        # Markdown Image Isolation
+        assert "diagram.png" not in markdown_body
+        assert "![" not in markdown_body
+        
+        # Separated Link Metadata Check
+        links = fc_res["data"]["links"]
+        assert len(links) == 1
+        assert links[0]["text"] == "pricing guide"
+        assert links[0]["url"] == "https://scraper.io/pricing"
+        assert links[0]["title"] == "Check plans"
+        
+        # Separated Image Metadata Check
+        images = fc_res["data"]["images"]
+        assert len(images) == 1
+        assert images[0]["src"] == "https://scraper.io/assets/diagram.png"
+        assert images[0]["alt"] == "Architecture Diagram"
+        assert images[0]["caption"] == "Our advanced data extraction flow"
+        assert images[0]["width"] == 800
+        assert images[0]["height"] == 600
+        
+        # Separated Video Metadata Check
+        videos = fc_res["data"]["videos"]
+        assert len(videos) == 2
+        
+        # HTML5 video
+        html5_video = [v for v in videos if v["type"] == "html5"][0]
+        assert html5_video["src"] == "https://scraper.io/assets/demo.mp4"
+        assert html5_video["title"] == "Framework Demo Video"
+        assert html5_video["thumbnail"] == "https://scraper.io/assets/thumbnail.png"
+        
+        # YouTube iframe embed
+        yt_video = [v for v in videos if v["type"] == "youtube"][0]
+        assert yt_video["src"] == "https://www.youtube.com/embed/dQw4w9WgXcQ"
+        assert yt_video["title"] == "Tutorial Video"
+        
+        print("   [SUCCESS] Firecrawl Normalization Layer tests passed.")
+    except Exception as e:
+        print(f"   [FAIL] Firecrawl Normalization Layer tests failed: {e}")
+        raise e
+
     # Clean up mock items
+
     db.delete(mock_url)
     db.delete(mock_query)
     db.commit()

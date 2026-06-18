@@ -66,6 +66,8 @@ class CrawledURLResponse(BaseModel):
     full_content: Optional[str] = None
     author: Optional[str] = None
     image_url: Optional[str] = None
+    image_links: Optional[str] = None
+    video_links: Optional[str] = None
     discovered_at: datetime
     matched_keywords: Optional[str] = None
 
@@ -97,3 +99,57 @@ class SearchScheduleResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+# Firecrawl Output Schema Mappings
+class FirecrawlMetadata(BaseModel):
+    title: str = ""
+    description: str = ""
+    language: str = ""
+    sourceURL: str = ""
+    statusCode: int = 200
+
+class FirecrawlImageData(BaseModel):
+    src: str = ""
+    alt: str = ""
+    caption: str = ""
+    width: int = 0
+    height: int = 0
+
+class FirecrawlVideoData(BaseModel):
+    src: str = ""
+    title: str = ""
+    thumbnail: str = ""
+    type: str = ""
+
+class FirecrawlLinkData(BaseModel):
+    text: str = ""
+    url: str = ""
+    title: str = ""
+
+class FirecrawlContent(BaseModel):
+    headings: List[str] = []
+    paragraphs: List[str] = []
+    lists: List[List[str]] = []
+    tables: List[List[List[str]]] = []
+    codeBlocks: List[str] = []
+    quotes: List[str] = []
+
+class FirecrawlData(BaseModel):
+    markdown: str = ""
+    html: str = ""
+    metadata: FirecrawlMetadata
+    links: List[FirecrawlLinkData] = []
+    images: List[FirecrawlImageData] = []
+    videos: List[FirecrawlVideoData] = []
+    content: FirecrawlContent
+
+class FirecrawlResponse(BaseModel):
+    success: bool = True
+    data: FirecrawlData
+
+class ScrapeRequest(BaseModel):
+    url: str
+    engine: Optional[str] = "fast"
+    ignore_robots: Optional[bool] = False
+
+

@@ -2,8 +2,11 @@ import os
 import re
 import time
 import json
+import hashlib
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 from selenium import webdriver
+from backend.postgres_integration import classify_article
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -13,6 +16,26 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     StaleElementReferenceException
 )
+
+# Regex patterns that indicate related articles, comments, or other sections that come after the main article
+STOP_PATTERNS = [
+    re.compile(r'^more\s+(?:.*\s+)?(?:news|articles|stories|headlines)$', re.IGNORECASE),
+    re.compile(r'^related\s+(?:.*\s+)?(?:stories|articles|posts|news|content)$', re.IGNORECASE),
+    re.compile(r'^you\s+may\s+also\s+like$', re.IGNORECASE),
+    re.compile(r'^recommended\s+for\s+you$', re.IGNORECASE),
+    re.compile(r'^read\s+next$', re.IGNORECASE),
+    re.compile(r'^sponsored\s+(?:.*\s+)?content$', re.IGNORECASE),
+    re.compile(r'^latest\s+(?:.*\s+)?(?:stories|news|headlines|articles)$', re.IGNORECASE),
+    re.compile(r'^popular\s+(?:.*\s+)?(?:stories|articles|posts)$', re.IGNORECASE),
+    re.compile(r'^top\s+stories$', re.IGNORECASE),
+    re.compile(r'^trending\s+(?:.*\s+)?(?:stories|news|topics)$', re.IGNORECASE),
+    re.compile(r'^comments$', re.IGNORECASE),
+    re.compile(r'^discussion$', re.IGNORECASE),
+    re.compile(r'^share\s+this\s+article$', re.IGNORECASE),
+    re.compile(r'^follow\s+us$', re.IGNORECASE),
+    re.compile(r'^newsletter$', re.IGNORECASE),
+    re.compile(r'^more\s+from\s+', re.IGNORECASE),
+]
 
 # Common selectors and text patterns for expand/read-more buttons
 EXPAND_BUTTON_XPATHS = [
@@ -189,8 +212,8 @@ def find_and_click_next_page(driver: webdriver.Chrome, timeout: int = 5) -> bool
             
     return False
 
-def extract_article_data(driver: webdriver.Chrome, url: str) -> dict:
-    """Extracts text content, video URLs, and image URLs from the fully expanded page."""
+def extract_article_data(driver: webdriver.Chrome, url: str, keywords: list) -> dict:
+    """Extracts data conforming to the 19-field schema from the fully expanded page."""
     print("[INFO] Extracting data from page...")
     
     # 1. Text Content Extraction
@@ -200,6 +223,17 @@ def extract_article_data(driver: webdriver.Chrome, url: str) -> dict:
         try:
             txt = el.text.strip()
             if txt:
+                tag_name = el.tag_name.lower()
+                is_heading = tag_name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+                if is_heading or len(txt) < 80:
+                    is_stop = False
+                    for pattern in STOP_PATTERNS:
+                        if pattern.match(txt):
+                            is_stop = True
+                            break
+                    if is_stop:
+                        print(f"[INFO] Section header '{txt}' matched stop pattern. Stopping text extraction.")
+                        break
                 text_lines.append(txt)
         except StaleElementReferenceException:
             continue
@@ -259,11 +293,77 @@ def extract_article_data(driver: webdriver.Chrome, url: str) -> dict:
         except Exception:
             continue
 
+    # 4. Conform to the 19-field schema
+    record_id = hashlib.md5(url.encode("utf-8")).hexdigest()
+    
+    # Extract Title
+    title = ""
+    try:
+        title = driver.title
+    except Exception:
+        pass
+    if not title:
+        try:
+            h1s = driver.find_elements(By.TAG_NAME, "h1")
+            if h1s:
+                title = h1s[0].text.strip()
+        except Exception:
+            pass
+    if not title:
+        title = "Untitled"
+        
+    # Extract Author
+    author = "Unknown"
+    try:
+        author_meta = driver.find_elements(By.XPATH, "//meta[@name='author'] | //meta[@property='article:author']")
+        for el in author_meta:
+            val = el.get_attribute("content")
+            if val:
+                author = val.strip()
+                break
+    except Exception:
+        pass
+        
+    # Extract Language
+    language_code = "en"
+    try:
+        html_tags = driver.find_elements(By.TAG_NAME, "html")
+        if html_tags:
+            val = html_tags[0].get_attribute("lang")
+            if val:
+                language_code = val.split("-")[0].strip().lower()
+    except Exception:
+        pass
+        
+    source_name = urlparse(url).netloc.lower()
+    if source_name.startswith("www."):
+        source_name = source_name[4:]
+        
+    # Classify page heuristically
+    classification = classify_article(url, title, full_text, language_code)
+    
+    keywords_str = ", ".join(keywords) if keywords else ""
+    
     return {
+        "record_id": record_id,
+        "source_name": source_name,
+        "source_type": classification["source_type"],
+        "title": title,
         "url": url,
+        "publication_date": datetime.now(timezone.utc).isoformat(),
+        "author": author,
+        "content_type": classification["content_type"],
+        "subject_theme": classification["subject_theme"],
+        "country_region": classification["country_region"],
+        "language": classification["language"],
+        "keywords": keywords_str,
         "full_text": full_text,
-        "videos": list(video_urls),
-        "images": list(image_urls)
+        "tags": keywords_str,
+        "pdf_link": url if url.lower().endswith(".pdf") else "",
+        "image_links": ", ".join(list(image_urls)),
+        "video_links": ", ".join(list(video_urls)),
+        "organization": source_name,
+        "scraped_date": datetime.now(timezone.utc).isoformat()
     }
 
 def scrape_articles(urls: list, keywords: list, headless: bool = True, max_pages_to_search: int = 10) -> list:
@@ -327,15 +427,15 @@ def scrape_articles(urls: list, keywords: list, headless: bool = True, max_pages
                     expand_and_scroll_to_bottom(driver)
                     
                     # Step 4: Extract article contents
-                    article_data = extract_article_data(driver, driver.current_url)
+                    article_data = extract_article_data(driver, driver.current_url, keywords)
                     article_data["matched_page_index"] = page_num
                     scraped_results.append(article_data)
                     
                     print(f"[SUCCESS] Successfully scraped: {driver.current_url}")
                     print(f"   * Matched Page Number: {page_num}")
                     print(f"   * Paragraphs/headers: {len(article_data['full_text'].splitlines())}")
-                    print(f"   * Video URLs: {len(article_data['videos'])}")
-                    print(f"   * Image URLs: {len(article_data['images'])}")
+                    print(f"   * Video URLs: {len(article_data['video_links'].split(', ')) if article_data['video_links'] else 0}")
+                    print(f"   * Image URLs: {len(article_data['image_links'].split(', ')) if article_data['image_links'] else 0}")
                 except Exception as e:
                     print(f"[ERROR] Failed to extract data from matched page: {e}")
             else:

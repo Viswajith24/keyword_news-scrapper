@@ -27,7 +27,8 @@ from backend.models import SearchQuery, CrawledURL, SearchSchedule, KeywordProgr
 from backend.schemas import (
     SearchQueryCreate, SearchQueryResponse, 
     PaginatedCrawledURLResponse, CrawledURLResponse,
-    SearchScheduleCreate, SearchScheduleResponse
+    SearchScheduleCreate, SearchScheduleResponse,
+    ScrapeRequest, FirecrawlResponse
 )
 from backend.queue_manager import start_queue_worker, stop_queue_worker, request_job_stop
 from backend.scheduler import start_scheduler, stop_scheduler
@@ -35,6 +36,11 @@ from backend.exporter import export_results
 
 # Create and migrate database tables on startup
 init_db()
+try:
+    from backend.postgres_integration import init_postgres_db
+    init_postgres_db(verbose=True)
+except Exception as pg_init_err:
+    print(f"[PostgreSQL Warning] Could not initialize database on startup: {pg_init_err}")
 
 # Bearer Token Auth Logic
 API_TOKEN = os.environ.get("API_TOKEN", "changeme")
@@ -316,6 +322,22 @@ def export_search(request: Request, search_id: int, format: str = Query("csv"), 
 
     return Response(content=data_bytes, media_type=media_type, headers=headers)
 
+@app.post("/api/export/{search_id}/postgres")
+@limiter.limit("10/minute")
+def export_search_postgres(request: Request, search_id: int, db: Session = Depends(get_db), token: str = Depends(verify_token)):
+    """
+    Exports crawling results for a query into the configured PostgreSQL database.
+    """
+    from backend.postgres_integration import export_search_to_postgres
+    try:
+        inserted, updated = export_search_to_postgres(search_id, db)
+        return {
+            "status": "success",
+            "message": f"Successfully integrated data. Inserted {inserted} and updated {updated} records in the PostgreSQL database."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PostgreSQL integration failed: {str(e)}")
+
 @app.post("/api/schedules", response_model=SearchScheduleResponse)
 @limiter.limit("10/minute")
 def create_schedule(request: Request, payload: SearchScheduleCreate, db: Session = Depends(get_db), token: str = Depends(verify_token)):
@@ -366,7 +388,72 @@ def delete_schedule(request: Request, schedule_id: int, db: Session = Depends(ge
     db.commit()
     return {"message": f"Schedule {schedule_id} successfully deleted"}
 
+@app.post("/api/scrape", response_model=FirecrawlResponse)
+@limiter.limit("10/minute")
+def scrape_url(request: Request, payload: ScrapeRequest, token: str = Depends(verify_token)):
+    """
+    Live scrapes any target URL and formats the response according to the Firecrawl schema.
+    """
+    from backend.crawler import Crawler
+    from backend.firecrawl_converter import convert_html_to_firecrawl_schema
+
+    crawler = Crawler()
+    try:
+        html_content = crawler.fetch_page(
+            payload.url,
+            engine=payload.engine or "fast",
+            ignore_robots=payload.ignore_robots or False
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch page: {str(e)}")
+    finally:
+        crawler.close()
+
+    try:
+        firecrawl_data = convert_html_to_firecrawl_schema(html_content, payload.url)
+        return firecrawl_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to convert page content: {str(e)}")
+
+@app.get("/api/results/crawled/{url_id}/firecrawl", response_model=FirecrawlResponse)
+@limiter.limit("30/minute")
+def get_crawled_url_as_firecrawl(request: Request, url_id: int, db: Session = Depends(get_db)):
+    """
+    Retrieves a crawled URL record from the database and returns it structured
+    according to the Firecrawl response schema.
+    """
+    crawled_url = db.query(CrawledURL).filter(CrawledURL.id == url_id).first()
+    if not crawled_url:
+        raise HTTPException(status_code=404, detail="Crawled URL not found")
+
+    return {
+        "success": True,
+        "data": {
+            "markdown": crawled_url.full_content or "",
+            "html": "",
+            "metadata": {
+                "title": crawled_url.title or "Untitled",
+                "description": crawled_url.description or "",
+                "language": crawled_url.language or "en",
+                "sourceURL": crawled_url.url,
+                "statusCode": 200
+            },
+            "links": [],
+            "images": [{"src": crawled_url.image_url, "alt": "lead image", "caption": "", "width": 0, "height": 0}] if crawled_url.image_url else [],
+            "videos": [],
+            "content": {
+                "headings": [],
+                "paragraphs": [crawled_url.snippet] if crawled_url.snippet else [],
+                "lists": [],
+                "tables": [],
+                "codeBlocks": [],
+                "quotes": []
+            }
+        }
+    }
+
 # Mount Static Files (serves the frontend files)
+
 # Ensure the static folder exists
 static_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "static"))
 os.makedirs(static_dir, exist_ok=True)
