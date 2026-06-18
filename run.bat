@@ -25,6 +25,21 @@ if not exist .venv (
       )
 )
 
+:: Check if .env file exists; if not, create it from template
+if not exist .env (
+    if exist .env.example (
+        echo [INFO] Creating .env file from .env.example template...
+        copy .env.example .env >nul
+        echo [SUCCESS] Default .env created. Please configure your PostgreSQL connection in .env.
+    ) else (
+        echo [WARNING] .env and .env.example not found. Creating a default .env file...
+        echo DATABASE_URL=postgresql://postgres:postgres@localhost:5432/keyword_scraper > .env
+        echo API_TOKEN=changeme >> .env
+        echo [SUCCESS] Default .env created.
+    )
+)
+
+
 :: Activate Virtual Environment & Check dependencies
 echo [INFO] Activating virtual environment...
 call .venv\Scripts\activate
